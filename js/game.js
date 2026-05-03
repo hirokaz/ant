@@ -261,7 +261,7 @@ class Ant {
     this.hp = this.maxHp;
     this.attackPower = isPlayer ? PLAYER_ATTACK : FRIEND_ATTACK;
     this.speed = isPlayer ? PLAYER_SPEED : FRIEND_SPEED;
-    this.size = isPlayer ? 11 : 9;
+    this.size = isPlayer ? 14 : 9;
     this.state = isPlayer ? 'player' : 'idle';  // idle, follow, carrying, attacking
     this.target = null;
     this.carrying = null;
@@ -1246,19 +1246,19 @@ class Egg {
 // ---------- Enemy types ----------
 const ENEMY_DEFS = {
   spider: {
-    maxHp: 45, attackPower: 8, speed: 1.4, size: 16,
+    maxHp: 45, attackPower: 8, speed: 1.4, size: 22,
     detectRange: 140, attackRange: 28, attackCooldownMax: 1100,
     color: '#502050', headColor: '#3d1a3d', legColor: '#2a0d2a', markColor: '#7a307a'
   },
   beetle: {
     // Slow, tough, charges in straight line
-    maxHp: 95, attackPower: 14, speed: 0.95, size: 20,
+    maxHp: 95, attackPower: 14, speed: 0.95, size: 28,
     detectRange: 160, attackRange: 32, attackCooldownMax: 1600,
     color: '#3a4a1a', headColor: '#1f2a10', legColor: '#1a1a0a', markColor: '#6a8a30'
   },
   wasp: {
     // Fast, fragile, hover-and-dive
-    maxHp: 28, attackPower: 6, speed: 2.5, size: 13,
+    maxHp: 28, attackPower: 6, speed: 2.5, size: 18,
     detectRange: 200, attackRange: 22, attackCooldownMax: 800,
     color: '#e0b020', headColor: '#3a2a08', legColor: '#1a1408', markColor: '#1a1408'
   }
@@ -2922,15 +2922,11 @@ class Game {
     }
 
     if (this.audio) this.audio.play('expand');
-    // Welcome gift: heart + a random power-up reward in the new zone.
+    // Welcome gift: just a healing heart (reward power-ups are now reserved
+    // for raid clears).
     const giftX = (zone.x0 + zone.x1) / 2;
     const giftY = (zone.y0 + zone.y1) / 2;
     this.healItems.push(new HealItem(giftX, giftY));
-    if (this.powerUps) {
-      const types = Object.keys(POWERUP_DEFS);
-      const t = types[Math.floor(Math.random() * types.length)];
-      this.powerUps.push(new PowerUp(giftX + 30, giftY, t));
-    }
 
     // Seed the new zone with at least one new food and one new enemy.
     this._seedNewBiomeContent(zone, biomeType);
@@ -3158,8 +3154,8 @@ class Game {
     this.raidPenaltyApplied = false;
     if (success) {
       this._statBump('raidsWon');
-      this.showMessage('🛡️ 巣を守った！ 回復アイテムが現れた！', 'success', 3000);
-      // Spawn a heart bonus near the nest
+      this.showMessage('🛡️ 巣を守った！ ご褒美が現れた！', 'success', 3500);
+      // Spawn a heart bonus near the nest, plus 2 reward power-ups.
       let x, y, attempts = 0;
       do {
         x = NEST_X + rand(-160, 160);
@@ -3167,6 +3163,19 @@ class Game {
         attempts++;
       } while ((y < 40 || x < 60 || x > WORLD_WIDTH - 60) && attempts < 8);
       if (attempts < 8) this.healItems.push(new HealItem(x, y));
+      // Reward power-ups: 2 random ones around the player so the player can
+      // grab them while basking in the victory.
+      if (this.player && !this.player.dead && this.powerUps) {
+        const types = Object.keys(POWERUP_DEFS);
+        for (let i = 0; i < 2; i++) {
+          const a = Math.random() * Math.PI * 2;
+          const r = 60 + i * 30;
+          const px = clamp(this.player.x + Math.cos(a) * r, 30, WORLD_WIDTH - 30);
+          const py = clamp(this.player.y + Math.sin(a) * r, 30, WORLD_HEIGHT - 30);
+          const t = types[Math.floor(Math.random() * types.length)];
+          this.powerUps.push(new PowerUp(px, py, t));
+        }
+      }
     }
     // Schedule next raid + return to calm music.
     this.raidTimer = rand(90000, 180000);
@@ -3887,9 +3896,6 @@ class Game {
       setTimeout(() => { el.classList.add('hidden'); }, 1700);
     }
     if (this.audio) this.audio.play('milestone');
-    // Reward power-up: drop one near the player so the achievement gives
-    // a tangible perk, not just a banner.
-    this._dropRewardPowerUp();
     // Bigger particle burst around the player.
     if (this.player && !this.player.dead) {
       for (let i = 0; i < 32; i++) {
@@ -5021,25 +5027,38 @@ class Game {
       }
     }
 
-    // Dynamic goal text — track deposits early, then friend count.
+    // Dynamic goal text — varies by friend count to keep guidance fresh.
     const goal = document.getElementById('goalText');
     if (goal) {
       const deposits = (this.stats && this.stats.deposits) || 0;
+      // Compute next-area threshold (20, 70, 120, ...)
+      let nextArea = -1;
+      if (total >= FIRST_EXPANSION_AT) {
+        const stagesPast = Math.floor((total - FIRST_EXPANSION_AT) / EXPANSION_THRESHOLD);
+        const candidate = FIRST_EXPANSION_AT + EXPANSION_THRESHOLD * (stagesPast + 1);
+        if (candidate <= WIN_ANT_COUNT) nextArea = candidate;
+      }
       let text;
       if (deposits < 5) {
         text = `🌾 餌を巣に運ぼう (${deposits}/5)`;
       } else if (total < FIRST_EXPANSION_AT) {
-        text = `👥 仲間を ${FIRST_EXPANSION_AT}匹 に増やそう (${total}/${FIRST_EXPANSION_AT})`;
+        text = `👥 仲間を ${FIRST_EXPANSION_AT}匹に増やそう (${total}/${FIRST_EXPANSION_AT})`;
+      } else if (total < 50) {
+        text = `🌍 新エリア発見! 次の解放まで あと ${nextArea - total}匹`;
+      } else if (total < 100) {
+        text = `💪 100匹のコロニーを目指そう (${total}/100)`;
+      } else if (total < 200) {
+        text = `🛡 巣レイドに備えよう! 強い敵が来る (${total}/200)`;
+      } else if (total < 350) {
+        text = `⚔️ 強敵地帯を攻略しよう (${total}/350)`;
+      } else if (total < 500) {
+        text = `🏆 折り返し地点! 500匹まで あと ${500 - total}匹`;
+      } else if (total < 700) {
+        text = `🎖 大コロニーへ! 700匹まで あと ${700 - total}匹`;
+      } else if (total < 900) {
+        text = `🚀 ラストスパート! 900匹まで あと ${900 - total}匹`;
       } else if (total < WIN_ANT_COUNT) {
-        // Next area threshold: 20, 70, 120, 170, ...
-        const stagesPast = Math.floor((total - FIRST_EXPANSION_AT) / EXPANSION_THRESHOLD);
-        const next = FIRST_EXPANSION_AT + EXPANSION_THRESHOLD * (stagesPast + 1);
-        if (next <= WIN_ANT_COUNT) {
-          const remain = next - total;
-          text = `🌍 次のエリア解放まで あと ${remain} 匹`;
-        } else {
-          text = `🎯 1000匹を目指そう (${total}/${WIN_ANT_COUNT})`;
-        }
+        text = `🎯 クリアまで あと ${WIN_ANT_COUNT - total}匹!`;
       } else {
         text = '🎉 1000匹達成！';
       }
