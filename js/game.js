@@ -2502,7 +2502,9 @@ class Game {
 
   // ---------- Spawning ----------
   spawnFood() {
-    if (this.foods.filter(f => !f.deposited).length >= MAX_FOODS) return;
+    // Late-game allows more concurrent foods on the field.
+    const cap = MAX_FOODS + Math.min(8, Math.floor(this.friends.length / 100));
+    if (this.foods.filter(f => !f.deposited).length >= cap) return;
 
     // Per-terrain spawn weight & sampling. Higher = more likely to keep this candidate.
     const FOOD_TERRAIN_WEIGHT = {
@@ -2862,7 +2864,10 @@ class Game {
     this.foodSpawnTimer -= dt;
     if (this.foodSpawnTimer <= 0) {
       this.spawnFood();
-      const baseInterval = Math.max(3500, 8000 - this.friends.length * 50);
+      // Spawn an extra food at higher colony sizes to keep the pace.
+      if (this.friends.length >= 200 && Math.random() < 0.5) this.spawnFood();
+      const floor = this.friends.length >= 300 ? 2000 : this.friends.length >= 100 ? 2800 : 3500;
+      const baseInterval = Math.max(floor, 8000 - this.friends.length * 50);
       this.foodSpawnTimer = baseInterval + rand(0, 3000);
     }
     this.enemySpawnTimer -= dt;
