@@ -42,16 +42,19 @@ const ATTACK_COOLDOWN = 500;
 const FOOD_HATCH_TIME = 7000;
 
 const WIN_ANT_COUNT = 1000;
-const EXPANSION_THRESHOLD = 50;        // every N allies a new biome unlocks
-const MAX_EXPANSION_STAGE = 19;        // 1000/50 - 1 (final stage = win)
-const WORLD_EXPAND_AMOUNT = 350;       // ≈25% of initial 1400 width
+const FIRST_EXPANSION_AT = 20;          // First new area unlocks at 20 friends
+const EXPANSION_THRESHOLD = 50;         // Subsequent expansions every N more
+const MAX_EXPANSION_STAGE = 20;         // (1000 - 20) / 50 + 1 = 20
+const WORLD_EXPAND_AMOUNT = 350;
 // Order in which biome regions appear. After the 6th unlock the cycle repeats.
 const BIOME_SEQUENCE = ['mud', 'pond', 'flower', 'leaves', 'sand', 'concrete'];
-// Short-duration power-ups dropped occasionally by defeated enemies.
+// Short-duration power-ups. Dropped on enemy kills + on goal achievements.
 const POWERUP_DEFS = {
-  dash:   { icon: '⚡',  label: '猛ダッシュ', durationMs: 8000,  glowColor: 'rgba(255, 220, 80, 0.55)',  auraColor: '255, 220, 80'  },
-  strong: { icon: '🗡',  label: '強化アゴ',   durationMs: 10000, glowColor: 'rgba(255, 100, 100, 0.55)', auraColor: '255, 100, 100' },
-  invuln: { icon: '✨',  label: '無敵',       durationMs: 5000,  glowColor: 'rgba(160, 240, 255, 0.55)', auraColor: '160, 240, 255' }
+  dash:    { icon: '⚡',  label: '猛ダッシュ', durationMs: 8000,  glowColor: 'rgba(255, 220, 80, 0.55)',  auraColor: '255, 220, 80'  },
+  strong:  { icon: '🗡',  label: '強化アゴ',   durationMs: 10000, glowColor: 'rgba(255, 100, 100, 0.55)', auraColor: '255, 100, 100' },
+  invuln:  { icon: '✨',  label: '無敵',       durationMs: 5000,  glowColor: 'rgba(160, 240, 255, 0.55)', auraColor: '160, 240, 255' },
+  terrain: { icon: '🛡',  label: '地形無効',   durationMs: 12000, glowColor: 'rgba(140, 220, 200, 0.55)', auraColor: '140, 220, 200' },
+  giant:   { icon: '🦣',  label: '巨大化',     durationMs: 10000, glowColor: 'rgba(220, 130, 255, 0.55)', auraColor: '220, 130, 255' }
 };
 const POWERUP_TYPES = Object.keys(POWERUP_DEFS);
 
@@ -215,7 +218,7 @@ const BIOME_UNLOCK_INFO = {
   concrete: { name: '⬜ コンクリ', intro: '強敵&大型餌 (人の落とし物)' }
 };
 
-const MAX_ENEMIES = 4;
+const MAX_ENEMIES = 7;
 const MAX_FOODS = 9;
 
 // ---------- Utilities ----------
@@ -284,7 +287,9 @@ class Ant {
 
     // Terrain effects (slow/HP drain) — ground units only, ignored inside the nest.
     this._terrainSpeedMul = 1;
-    if (game.terrain && !inNest(this.x, this.y)) {
+    // Terrain-immune power-up shields the player from speed/dps penalties.
+    const terrainImmune = this.isPlayer && game.activePowerUp === 'terrain';
+    if (game.terrain && !inNest(this.x, this.y) && !terrainImmune) {
       const t = game.terrain.getAt(this.x, this.y);
       // First-time terrain hints (player only).
       if (this.isPlayer && game._hintOnce) {
@@ -331,6 +336,13 @@ class Ant {
       this.updatePlayer(dt, game);
     } else {
       this.updateFriend(dt, game);
+      // Spread out a bit. Skip carriers (their position is driven by Food
+      // arrangement) and idle ants deep in the nest (visual cap handles them).
+      if (!this.dead && this.state !== 'carrying') {
+        const isOutside = !inNest(this.x, this.y);
+        const isActive = this.state === 'follow' || this.state === 'attacking';
+        if (isOutside || isActive) this._applySeparation(game);
+      }
     }
 
     // Smoothly rotate toward targetAngle
@@ -528,6 +540,47 @@ class Ant {
     }
   }
 
+  // Separation force: push slightly away from other nearby friends so the
+  // colony doesn't visually pile up — they form ranks/lines/rings instead.
+  // Walkability is respected so ants won't get pushed into walls.
+  _applySeparation(game) {
+    const SEP_R = 14;
+    const SEP_F = 0.45;
+    let pushX = 0, pushY = 0;
+    let pairs = 0;
+    for (const f of game.friends) {
+      if (f === this || f.dead) continue;
+      const dx = this.x - f.x;
+      const dy = this.y - f.y;
+      // Cheap bbox prefilter
+      if (dx > SEP_R || dx < -SEP_R || dy > SEP_R || dy < -SEP_R) continue;
+      const d = Math.hypot(dx, dy);
+      if (d < SEP_R && d > 0.01) {
+        const m = ((SEP_R - d) / SEP_R) * SEP_F;
+        pushX += (dx / d) * m;
+        pushY += (dy / d) * m;
+        if (++pairs > 8) break;  // limit to nearest few
+      }
+    }
+    // Also keep some space from the player while following (no crowding).
+    if (this.state === 'follow' && game.player && !game.player.dead) {
+      const dx = this.x - game.player.x;
+      const dy = this.y - game.player.y;
+      const d = Math.hypot(dx, dy);
+      if (d < 16 && d > 0.01) {
+        const m = ((16 - d) / 16) * 0.5;
+        pushX += (dx / d) * m;
+        pushY += (dy / d) * m;
+      }
+    }
+    if (pushX !== 0 || pushY !== 0) {
+      const newX = this.x + pushX;
+      const newY = this.y + pushY;
+      if (game.isWalkableAt(newX, this.y)) this.x = newX;
+      if (game.isWalkableAt(this.x, newY)) this.y = newY;
+    }
+  }
+
   takeDamage(dmg, game, attacker) {
     if (this.dead || this.invuln > 0) return;
     // Invuln power-up shields the player completely.
@@ -553,6 +606,18 @@ class Ant {
 
   draw(ctx) {
     if (this.dead) return;
+    // Giant power-up: scale up entire player rendering ×1.6 (visual + bigger
+    // hitbox feel — collisions stay normal-sized for game balance).
+    let drawScale = 1;
+    if (this.isPlayer && window.game && window.game.activePowerUp === 'giant') {
+      drawScale = 1.6;
+    }
+    if (drawScale !== 1) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.scale(drawScale, drawScale);
+      ctx.translate(-this.x, -this.y);
+    }
     // Gold-skin glow (player only): drawn before any rotation.
     if (this.isPlayer && this._skinGlow) {
       ctx.save();
@@ -677,6 +742,8 @@ class Ant {
       ctx.closePath();
       ctx.fill();
     }
+    // Close the giant-scale transform block, if it was opened.
+    if (drawScale !== 1) ctx.restore();
   }
 }
 
@@ -2713,10 +2780,15 @@ class Game {
     }
 
     if (this.audio) this.audio.play('expand');
-    // Welcome gift: drop a heart in the new zone as a small reward.
+    // Welcome gift: heart + a random power-up reward in the new zone.
     const giftX = (zone.x0 + zone.x1) / 2;
     const giftY = (zone.y0 + zone.y1) / 2;
     this.healItems.push(new HealItem(giftX, giftY));
+    if (this.powerUps) {
+      const types = Object.keys(POWERUP_DEFS);
+      const t = types[Math.floor(Math.random() * types.length)];
+      this.powerUps.push(new PowerUp(giftX + 30, giftY, t));
+    }
 
     // Seed the new zone with at least one new food and one new enemy.
     this._seedNewBiomeContent(zone, biomeType);
@@ -2881,9 +2953,11 @@ class Game {
     const count = clamp(3 + Math.floor(totalAnts / 50), 3, 22);
     // Per-raider power scale: 1.0 → 1.8 across 0 → 1000 friends.
     const powerScale = 1.0 + Math.min(0.8, totalAnts / 1000);
-    // Boss chance: 0% before 100 friends, ramping toward ~80% at 1000.
-    const bossChance = totalAnts < 100 ? 0 : Math.min(0.8, totalAnts / 800);
-    const includeBoss = Math.random() < bossChance;
+    // Boss is ALWAYS present in a raid. Boss strength scales hard with the
+    // colony — small colonies face a modest boss, big colonies face a giant.
+    const includeBoss = true;
+    // Boss multiplier: ×2.5 at 20 friends, up to ×4.5 at 1000.
+    const bossMul = 2.5 + Math.min(2.0, totalAnts / 500);
 
     // Pick a random edge to spawn the formation
     const edge = Math.floor(Math.random() * 4);
@@ -2899,7 +2973,7 @@ class Game {
     if (includeBoss) {
       const bossX = clamp(baseX, 40, WORLD_WIDTH - 40);
       const bossY = clamp(baseY, 40, WORLD_HEIGHT - 40);
-      const boss = new Enemy(bossX, bossY, 'beetle', powerScale * 3.0, true);
+      const boss = new Enemy(bossX, bossY, 'beetle', bossMul, true);
       boss.isBoss = true;
       this.enemies.push(boss);
       this.raidEnemies.push(boss);
@@ -3533,6 +3607,18 @@ class Game {
     `;
   }
 
+  // Drop a random power-up near the player as a reward.
+  _dropRewardPowerUp() {
+    if (!this.player || this.player.dead || !this.powerUps) return;
+    const types = Object.keys(POWERUP_DEFS);
+    const t = types[Math.floor(Math.random() * types.length)];
+    const a = Math.random() * Math.PI * 2;
+    const r = 50;
+    const x = clamp(this.player.x + Math.cos(a) * r, 30, WORLD_WIDTH - 30);
+    const y = clamp(this.player.y + Math.sin(a) * r, 30, WORLD_HEIGHT - 30);
+    this.powerUps.push(new PowerUp(x, y, t));
+  }
+
   // ---------- Hints (one-shot) ----------
   _hintOnce(id, text) {
     let seen;
@@ -3623,6 +3709,9 @@ class Game {
       setTimeout(() => { el.classList.add('hidden'); }, 1700);
     }
     if (this.audio) this.audio.play('milestone');
+    // Reward power-up: drop one near the player so the achievement gives
+    // a tangible perk, not just a banner.
+    this._dropRewardPowerUp();
     // Bigger particle burst around the player.
     if (this.player && !this.player.dead) {
       for (let i = 0; i < 32; i++) {
@@ -3757,11 +3846,11 @@ class Game {
 
     if (closest) {
       const wasAlive = !closest.dead;
-      // Strong-mouth power-up doubles attack damage.
-      const dmg = this.activePowerUp === 'strong'
-        ? Math.round(this.player.attackPower * 2)
-        : this.player.attackPower;
-      closest.takeDamage(dmg, this, this.player);
+      // Strong-mouth doubles damage; Giant adds another 2.5x for a smashing feel.
+      let dmg = this.player.attackPower;
+      if (this.activePowerUp === 'strong') dmg *= 2;
+      if (this.activePowerUp === 'giant')  dmg = Math.round(dmg * 2.5);
+      closest.takeDamage(Math.round(dmg), this, this.player);
       if (this.audio) this.audio.play('hit');
       if (wasAlive && closest.dead) {
         this._advanceTutorial('kill');
@@ -4050,8 +4139,8 @@ class Game {
 
   getMaxEnemies() {
     const totalAnts = 1 + this.friends.filter(f => !f.dead).length;
-    // Slowly grow cap as colony grows: 4 → 12 over 1000 ants.
-    return Math.min(12, MAX_ENEMIES + Math.floor(totalAnts / 125));
+    // Cap grows from 7 → 22 over 0 → 1000 ants.
+    return Math.min(22, MAX_ENEMIES + Math.floor(totalAnts / 65));
   }
 
   spawnEnemy() {
@@ -4552,8 +4641,8 @@ class Game {
     if (this.enemySpawnTimer <= 0) {
       this.spawnEnemy();
       const totalAnts = 1 + this.friends.length;
-      const baseInt = Math.max(7000, 18000 - totalAnts * 100);
-      this.enemySpawnTimer = baseInt + rand(0, 5000);
+      const baseInt = Math.max(3500, 12000 - totalAnts * 60);
+      this.enemySpawnTimer = baseInt + rand(0, 2500);
       if (!this.firstEnemySeen) {
         this.firstEnemySeen = true;
         setTimeout(() => this.showMessage('敵だ！攻撃か仲間を呼ぼう！', 'warn', 3000), 500);
@@ -4756,27 +4845,35 @@ class Game {
       }
     }
 
-    // Dynamic goal text — short next-step guidance.
+    // Dynamic goal text — track deposits early, then friend count.
     const goal = document.getElementById('goalText');
     if (goal) {
+      const deposits = (this.stats && this.stats.deposits) || 0;
       let text;
-      if (total < 4)         text = '🌾 餌を巣に運ぼう';
-      else if (total < 10)   text = '👥 「呼ぶ」で仲間を集めて大きな餌に挑戦';
-      else if (total < 20)   text = '⚔️ 敵を倒して餌をゲットしよう';
-      else if (total < 50)   text = '🛡 巣を狙う敵に注意！';
-      else if (total < 100)  text = `🌍 あと ${50 - (total % 50)} 匹で新エリア解放`;
-      else if (total < WIN_ANT_COUNT) {
-        const next = (Math.floor(total / 50) + 1) * 50;
-        const remain = next - total;
-        text = `🌍 次の解放まで あと ${remain} 匹 (${next}匹で${BIOME_SEQUENCE[(next/50 - 1) % BIOME_SEQUENCE.length]}エリア)`;
+      if (deposits < 5) {
+        text = `🌾 餌を巣に運ぼう (${deposits}/5)`;
+      } else if (total < FIRST_EXPANSION_AT) {
+        text = `👥 仲間を ${FIRST_EXPANSION_AT}匹 に増やそう (${total}/${FIRST_EXPANSION_AT})`;
+      } else if (total < WIN_ANT_COUNT) {
+        // Next area threshold: 20, 70, 120, 170, ...
+        const stagesPast = Math.floor((total - FIRST_EXPANSION_AT) / EXPANSION_THRESHOLD);
+        const next = FIRST_EXPANSION_AT + EXPANSION_THRESHOLD * (stagesPast + 1);
+        if (next <= WIN_ANT_COUNT) {
+          const remain = next - total;
+          text = `🌍 次のエリア解放まで あと ${remain} 匹`;
+        } else {
+          text = `🎯 1000匹を目指そう (${total}/${WIN_ANT_COUNT})`;
+        }
       } else {
         text = '🎉 1000匹達成！';
       }
       if (goal.textContent !== text) goal.textContent = text;
     }
 
-    // Field expansion check (every EXPANSION_THRESHOLD friends)
-    const expectedStage = Math.min(MAX_EXPANSION_STAGE, Math.floor(total / EXPANSION_THRESHOLD));
+    // Field expansion check (first @ 20, then every EXPANSION_THRESHOLD friends)
+    const expectedStage = total >= FIRST_EXPANSION_AT
+      ? Math.min(MAX_EXPANSION_STAGE, 1 + Math.floor((total - FIRST_EXPANSION_AT) / EXPANSION_THRESHOLD))
+      : 0;
     while (expectedStage > this.expansionStage && total < WIN_ANT_COUNT) {
       this.expandWorld();
     }
