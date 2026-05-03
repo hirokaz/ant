@@ -641,80 +641,105 @@ class Ant {
       ctx.globalAlpha = 0.45;
     }
 
+    // ===== Cute / pop-style ant rendering =====
+    // Big head + small round body + chunky legs + huge eyes. Walking bob
+    // gives the line of ants a fun marching feel.
     const s = this.size / 11;
-    const legSwing = Math.sin(this.legPhase) * 0.6;
-    const legSwing2 = Math.sin(this.legPhase + Math.PI) * 0.6;
+    const moving = this._moving;
+    const swingA = Math.sin(this.legPhase) * 1.2;
+    const swingB = Math.sin(this.legPhase + Math.PI) * 1.2;
+    const bob = moving ? Math.sin(this.legPhase * 2) * 0.8 : 0;
+    const outline = 'rgba(0,0,0,0.55)';
 
-    // Legs (drawn under body)
+    // Six chunky legs (3 left, 3 right). Drawn under body.
     ctx.strokeStyle = this.color;
-    ctx.lineWidth = 1.6 * s;
+    ctx.lineWidth = 2.0 * s;
     ctx.lineCap = 'round';
-    const legPositions = [
-      { y: -3 * s, swing: legSwing },
-      { y: 0, swing: legSwing2 },
-      { y: 3 * s, swing: legSwing }
+    const legSpec = [
+      { y: -2.0 * s, swing: swingA },
+      { y:  1.5 * s, swing: swingB },
+      { y:  5.0 * s, swing: swingA }
     ];
-    legPositions.forEach(lp => {
-      // Left leg
+    for (const L of legSpec) {
       ctx.beginPath();
-      ctx.moveTo(-2 * s, lp.y);
-      ctx.quadraticCurveTo(-7 * s, lp.y + lp.swing * 2, -10 * s, lp.y + lp.swing * 4);
+      ctx.moveTo(-2.5 * s, L.y);
+      ctx.quadraticCurveTo(-6 * s, L.y + L.swing, -8 * s, L.y + 1 + L.swing * 1.6);
       ctx.stroke();
-      // Right leg
       ctx.beginPath();
-      ctx.moveTo(2 * s, lp.y);
-      ctx.quadraticCurveTo(7 * s, lp.y - lp.swing * 2, 10 * s, lp.y - lp.swing * 4);
+      ctx.moveTo(2.5 * s, L.y);
+      ctx.quadraticCurveTo(6 * s, L.y - L.swing, 8 * s, L.y + 1 - L.swing * 1.6);
       ctx.stroke();
-    });
-
-    // Abdomen (rear)
-    ctx.fillStyle = this.color;
-    ctx.beginPath();
-    ctx.ellipse(0, 6 * s, 5 * s, 7 * s, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // Highlight
-    ctx.fillStyle = this.bodyHighlight;
-    ctx.beginPath();
-    ctx.ellipse(-1.2 * s, 5 * s, 2 * s, 3.5 * s, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Thorax (middle)
-    ctx.fillStyle = this.color;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 3.5 * s, 4 * s, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Head
-    ctx.fillStyle = this.color;
-    ctx.beginPath();
-    ctx.ellipse(0, -6 * s, 4 * s, 4.5 * s, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // Head highlight
-    ctx.fillStyle = this.bodyHighlight;
-    ctx.beginPath();
-    ctx.ellipse(-1 * s, -6.5 * s, 1.4 * s, 2 * s, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Antennae
-    ctx.strokeStyle = this.color;
-    ctx.lineWidth = 1.3 * s;
-    ctx.beginPath();
-    ctx.moveTo(-1.5 * s, -8 * s);
-    ctx.quadraticCurveTo(-3.5 * s, -11 * s, -3 * s, -13 * s);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(1.5 * s, -8 * s);
-    ctx.quadraticCurveTo(3.5 * s, -11 * s, 3 * s, -13 * s);
-    ctx.stroke();
-
-    // Eyes (player only, distinguishing)
-    if (this.isPlayer) {
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      ctx.arc(-1.6 * s, -7 * s, 0.7 * s, 0, Math.PI * 2);
-      ctx.arc(1.6 * s, -7 * s, 0.7 * s, 0, Math.PI * 2);
-      ctx.fill();
     }
+
+    // Body (single round capsule, smaller than head)
+    ctx.fillStyle = this.color;
+    ctx.strokeStyle = outline;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.ellipse(0, 4.5 * s + bob, 5.4 * s, 5.6 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    // Body highlight
+    ctx.fillStyle = this.bodyHighlight;
+    ctx.beginPath();
+    ctx.ellipse(-1.4 * s, 3.4 * s + bob, 1.8 * s, 2.6 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Head (big chibi)
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.arc(0, -4.5 * s + bob * 0.6, 5.6 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = outline;
+    ctx.stroke();
+    // Head highlight (sheen on left)
+    ctx.fillStyle = this.bodyHighlight;
+    ctx.beginPath();
+    ctx.ellipse(-2 * s, -5.6 * s + bob * 0.6, 1.6 * s, 1.9 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Big round eyes (whites + pupils + sparkle)
+    const eyeOff = 2.0 * s;
+    const eyeY = -5.0 * s + bob * 0.6;
+    const eyeR = 1.7 * s;
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = outline;
+    ctx.lineWidth = 1.0;
+    ctx.beginPath(); ctx.arc(-eyeOff, eyeY, eyeR, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc( eyeOff, eyeY, eyeR, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // Pupils
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath(); ctx.arc(-eyeOff, eyeY + 0.2 * s, 0.85 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc( eyeOff, eyeY + 0.2 * s, 0.85 * s, 0, Math.PI * 2); ctx.fill();
+    // Eye sparkle
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(-eyeOff + 0.4 * s, eyeY - 0.3 * s, 0.4 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc( eyeOff + 0.4 * s, eyeY - 0.3 * s, 0.4 * s, 0, Math.PI * 2); ctx.fill();
+
+    // Tiny smile
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.arc(0, -2.4 * s + bob * 0.6, 1.3 * s, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+
+    // Antennae with little ball tips
+    const antBob = Math.sin(this.legPhase * 2 + 1.2) * 0.4;
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 1.4 * s;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-1.8 * s, -8.2 * s);
+    ctx.quadraticCurveTo(-3.5 * s + antBob, -10 * s, -3.0 * s + antBob, -12.0 * s);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo( 1.8 * s, -8.2 * s);
+    ctx.quadraticCurveTo( 3.5 * s - antBob, -10 * s,  3.0 * s - antBob, -12.0 * s);
+    ctx.stroke();
+    // Tips
+    ctx.fillStyle = this.color;
+    ctx.beginPath(); ctx.arc(-3.0 * s + antBob, -12.0 * s, 0.95 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc( 3.0 * s - antBob, -12.0 * s, 0.95 * s, 0, Math.PI * 2); ctx.fill();
 
     ctx.restore();
 
@@ -5519,45 +5544,298 @@ class Game {
   }
 
   drawBackground(ctx) {
-    // Outside grass area
-    const grad = ctx.createLinearGradient(0, 0, 0, WORLD_HEIGHT);
-    grad.addColorStop(0, '#4d8a32');
-    grad.addColorStop(0.6, '#5a9b3a');
-    grad.addColorStop(0.85, '#6d7530');
-    grad.addColorStop(1, '#8a6a3a');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-
-    // Effective viewport size in world units (camera scale changes during cinematic).
+    // Camera + viewport in world units (scale during cinematic).
     const scale = (this.camera && this.camera.scale) || 1;
-    const viewWworld = this.viewW / scale;
-    const viewHworld = this.viewH / scale;
+    const vWw = this.viewW / scale;
+    const vHw = this.viewH / scale;
+    const visL = this.camera.x - 30;
+    const visT = this.camera.y - 30;
+    const visR = this.camera.x + vWw + 30;
+    const visB = this.camera.y + vHw + 30;
 
-    // Texture dots (small specks for grass detail)
-    ctx.fillStyle = 'rgba(60, 110, 50, 0.25)';
-    const cx0 = Math.max(0, Math.floor(this.camera.x / 50) * 50);
-    const cy0 = Math.max(0, Math.floor(this.camera.y / 50) * 50);
-    const cx1 = Math.min(WORLD_WIDTH, this.camera.x + viewWworld + 50);
-    const cy1 = Math.min(WORLD_HEIGHT, this.camera.y + viewHworld + 50);
-    for (let x = cx0; x < cx1; x += 50) {
-      for (let y = cy0; y < cy1; y += 50) {
-        // pseudo-random but stable speck positions
-        const seed = (x * 7919 + y * 6857) % 1000;
-        const sx = x + (seed % 50);
-        const sy = y + ((seed * 13) % 50);
-        ctx.fillRect(sx, sy, 2, 2);
+    // ---- Phase 1: rocky wasteland everywhere (under everything) ----
+    // Warm dark stone gradient as the base.
+    const baseGrad = ctx.createLinearGradient(visL, visT, visL, visB);
+    baseGrad.addColorStop(0, '#3b342c');
+    baseGrad.addColorStop(1, '#2e2820');
+    ctx.fillStyle = baseGrad;
+    ctx.fillRect(visL, visT, visR - visL, visB - visT);
+    this._drawRockClutter(visL, visT, visR, visB);
+
+    // ---- Phase 2: each zone as a smooth organic biome shape ----
+    if (this.zones) {
+      for (const zone of this.zones) {
+        if (zone.x1 < visL || zone.x0 > visR || zone.y1 < visT || zone.y0 > visB) continue;
+        this._drawZoneBackground(ctx, zone);
       }
     }
+  }
 
-    // Terrain patches on top of base grass
-    if (this.terrain) {
-      this.terrain.draw(ctx, this.camera.x, this.camera.y, viewWworld, viewHworld);
+  // Stable per-cell pseudo-random in [0, 1) — for prop placement.
+  _hash01(c, r, salt = 0) {
+    const n = (c * 73856093) ^ (r * 19349663) ^ (salt * 83492791);
+    return ((n >>> 0) % 100000) / 100000;
+  }
+
+  // Scatter chunky dark rocks/pebbles across the visible area, except where
+  // they'd land inside an unlocked zone (those are biome territory).
+  _drawRockClutter(visL, visT, visR, visB) {
+    const ctx = this.ctx;
+    const cell = 70;
+    const c0 = Math.floor(visL / cell);
+    const r0 = Math.floor(visT / cell);
+    const c1 = Math.ceil(visR / cell);
+    const r1 = Math.ceil(visB / cell);
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
+        // Stable position within the cell
+        const px = c * cell + this._hash01(c, r, 1) * cell;
+        const py = r * cell + this._hash01(c, r, 2) * cell;
+        if (this._isInsideAnyZone(px, py)) continue;
+        const sz = 4 + this._hash01(c, r, 3) * 6;
+        const tilt = this._hash01(c, r, 4) * Math.PI;
+        // Rock body
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.rotate(tilt);
+        ctx.fillStyle = '#1c1812';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, sz, sz * 0.72, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Highlight chip
+        ctx.fillStyle = 'rgba(180,160,130,0.32)';
+        ctx.beginPath();
+        ctx.ellipse(-sz * 0.35, -sz * 0.30, sz * 0.34, sz * 0.18, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
     }
+  }
 
-    // World boundary
-    ctx.strokeStyle = 'rgba(0,0,0,0.2)';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+  _isInsideAnyZone(x, y) {
+    if (!this.zones) return false;
+    for (const z of this.zones) {
+      if (x >= z.x0 && x <= z.x1 && y >= z.y0 && y <= z.y1) return true;
+    }
+    return false;
+  }
+
+  _drawZoneBackground(ctx, zone) {
+    const x = zone.x0, y = zone.y0;
+    const w = zone.x1 - x, h = zone.y1 - y;
+    const biome = zone.biome;
+    // Soft drop-shadow under each zone for that "raised platform" feel.
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.45)';
+    ctx.shadowBlur = 14;
+    ctx.shadowOffsetY = 4;
+    this._fillBiomeBase(ctx, x, y, w, h, biome);
+    ctx.restore();
+    // Decorative props on top
+    this._drawZoneDeco(ctx, zone);
+  }
+
+  _roundedRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  _fillBiomeBase(ctx, x, y, w, h, biome) {
+    const r = 60;
+    if (biome === 'grass') {
+      const g = ctx.createLinearGradient(x, y, x, y + h);
+      g.addColorStop(0, '#6cae45');
+      g.addColorStop(1, '#4f9430');
+      ctx.fillStyle = g;
+      this._roundedRect(ctx, x, y, w, h, r); ctx.fill();
+    } else if (biome === 'pond') {
+      const g = ctx.createRadialGradient(x + w/2, y + h/2, 30, x + w/2, y + h/2, Math.max(w, h) * 0.6);
+      g.addColorStop(0, '#5aa1d9');
+      g.addColorStop(1, '#27598a');
+      ctx.fillStyle = g;
+      this._roundedRect(ctx, x, y, w, h, r); ctx.fill();
+    } else if (biome === 'sand') {
+      const g = ctx.createLinearGradient(x, y, x, y + h);
+      g.addColorStop(0, '#e6cd8d');
+      g.addColorStop(1, '#cbab68');
+      ctx.fillStyle = g;
+      this._roundedRect(ctx, x, y, w, h, r); ctx.fill();
+    } else if (biome === 'mud') {
+      const g = ctx.createLinearGradient(x, y, x, y + h);
+      g.addColorStop(0, '#6c4624');
+      g.addColorStop(1, '#4a2e15');
+      ctx.fillStyle = g;
+      this._roundedRect(ctx, x, y, w, h, r); ctx.fill();
+    } else if (biome === 'flower') {
+      const g = ctx.createLinearGradient(x, y, x, y + h);
+      g.addColorStop(0, '#74b746');
+      g.addColorStop(1, '#558e30');
+      ctx.fillStyle = g;
+      this._roundedRect(ctx, x, y, w, h, r); ctx.fill();
+    } else if (biome === 'leaves') {
+      const g = ctx.createLinearGradient(x, y, x, y + h);
+      g.addColorStop(0, '#8b5328');
+      g.addColorStop(1, '#603a1c');
+      ctx.fillStyle = g;
+      this._roundedRect(ctx, x, y, w, h, r); ctx.fill();
+    } else if (biome === 'concrete') {
+      const g = ctx.createLinearGradient(x, y, x, y + h);
+      g.addColorStop(0, '#a6a6a6');
+      g.addColorStop(1, '#7e7e7e');
+      ctx.fillStyle = g;
+      this._roundedRect(ctx, x, y, w, h, r); ctx.fill();
+    }
+  }
+
+  _drawZoneDeco(ctx, zone) {
+    const { x0, y0, x1, y1, biome } = zone;
+    const w = x1 - x0, h = y1 - y0;
+    // Density per biome — denser for "decorative" biomes like flower/leaves.
+    const density = biome === 'flower' ? 1.6
+                  : biome === 'leaves' ? 1.4
+                  : biome === 'sand'   ? 1.0
+                  : biome === 'mud'    ? 0.8
+                  : biome === 'concrete' ? 0.7
+                  : biome === 'pond'   ? 0.6
+                  : 0.5;
+    const items = Math.floor((w * h) / 2200 * density);
+    const animPhase = (this.time || 0) * 0.001;
+    for (let i = 0; i < items; i++) {
+      // Stable per-(zone, i)
+      const ux = this._hash01(zone.x0 + i, zone.y0, 11);
+      const uy = this._hash01(zone.x0 + i, zone.y0, 22);
+      const px = x0 + 12 + ux * (w - 24);
+      const py = y0 + 12 + uy * (h - 24);
+      const seed = ((zone.x0 + i) * 7919) ^ (zone.y0 * 6857);
+      this._drawDecoItem(ctx, px, py, biome, seed, animPhase);
+    }
+  }
+
+  _drawDecoItem(ctx, x, y, biome, seed, anim) {
+    const u = (s) => ((seed * (s + 1)) >>> 0) % 1000 / 1000;
+    if (biome === 'flower') {
+      // Cute 5-petal flower with sway
+      const colors = ['#ff7eb1', '#ffd24a', '#ffffff', '#bb88ff', '#ff8042'];
+      const c = colors[Math.floor(u(1) * colors.length)];
+      const r = 3.2 + u(2) * 1.2;
+      const sway = Math.sin(anim * 1.5 + u(3) * Math.PI * 2) * 1.2;
+      // Stem
+      ctx.strokeStyle = '#3d6a25';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(x, y + r * 1.6);
+      ctx.quadraticCurveTo(x + sway * 0.5, y + r * 0.6, x + sway, y - r * 0.2);
+      ctx.stroke();
+      // Petals
+      const cx = x + sway, cy = y;
+      ctx.fillStyle = c;
+      for (let p = 0; p < 5; p++) {
+        const a = (p / 5) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, r * 0.7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = '#ffe34a';
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.65, 0, Math.PI * 2); ctx.fill();
+    } else if (biome === 'leaves') {
+      const colors = ['#a55a25', '#d68635', '#e0a040', '#7d4419', '#c46c20'];
+      const c = colors[Math.floor(u(1) * colors.length)];
+      const a = u(2) * Math.PI * 2;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(a);
+      ctx.fillStyle = c;
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 6, 3.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-6, 0); ctx.lineTo(6, 0);
+      ctx.stroke();
+      ctx.restore();
+    } else if (biome === 'pond') {
+      // Lily pad with subtle ripple
+      const ripple = (anim + u(1)) % 1;
+      ctx.fillStyle = 'rgba(110, 200, 100, 0.85)';
+      ctx.strokeStyle = 'rgba(40,80,40,0.35)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.arc(x, y, 9 + u(2) * 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // wedge cut for the lily pad
+      ctx.fillStyle = 'rgba(50, 100, 140, 0.55)';
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.arc(x, y, 9.4, 0, Math.PI / 5);
+      ctx.closePath();
+      ctx.fill();
+      // Ripple ring
+      ctx.strokeStyle = `rgba(255,255,255,${0.30 * (1 - ripple)})`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(x, y, 12 + ripple * 14, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (biome === 'sand') {
+      ctx.fillStyle = 'rgba(120, 80, 40, 0.55)';
+      ctx.beginPath();
+      ctx.arc(x, y, 1.7 + u(1) * 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      // Occasional bigger rock
+      if (u(2) < 0.18) {
+        ctx.fillStyle = '#c9a86c';
+        ctx.beginPath();
+        ctx.ellipse(x + 4, y + 2, 3.5, 2.4, u(3) * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.beginPath();
+        ctx.ellipse(x + 3, y + 1, 1.2, 0.8, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (biome === 'mud') {
+      // Dark wet patch
+      ctx.fillStyle = 'rgba(28, 18, 8, 0.7)';
+      ctx.beginPath();
+      ctx.ellipse(x, y, 9, 5, u(1) * Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+      // Gloss highlight
+      ctx.fillStyle = 'rgba(150, 110, 70, 0.30)';
+      ctx.beginPath();
+      ctx.ellipse(x - 2, y - 1, 3, 1, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Reed sometimes
+      if (u(2) < 0.22) {
+        ctx.strokeStyle = 'rgba(40, 70, 30, 0.8)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x + 4, y);
+        ctx.quadraticCurveTo(x + 5, y - 5, x + 4, y - 11);
+        ctx.stroke();
+      }
+    } else if (biome === 'concrete') {
+      // Crack
+      ctx.strokeStyle = 'rgba(40,40,40,0.55)';
+      ctx.lineWidth = 1.1;
+      let cx = x, cy = y;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      for (let i = 0; i < 3; i++) {
+        cx += (u(i + 1) - 0.5) * 16;
+        cy += (u(i + 5) - 0.5) * 16;
+        ctx.lineTo(cx, cy);
+      }
+      ctx.stroke();
+      // Speckle
+      ctx.fillStyle = 'rgba(70,70,70,0.4)';
+      ctx.fillRect(x + 4, y + 4, 1.4, 1.4);
+    }
   }
 
   drawNest(ctx) {
