@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#2d5016">
+<title>アント - ANT</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="gameContainer">
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div class="hud-row">
+      <div id="antCount">🐜 1 / 100</div>
+      <div id="hpContainer">
+        <div id="hpLabel">HP</div>
+        <div id="hpBar"><div id="hpFill"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Message Area -->
+  <div id="messageArea"></div>
+
+  <!-- Controls -->
+  <div id="controls">
+    <div id="joystickHitArea"></div>
+    <div id="joystickBase">
+      <div id="joystickKnob"></div>
+    </div>
+    <div id="actionButtons">
+      <button id="callBtn" class="action-btn">仲間<br>呼ぶ</button>
+      <button id="attackBtn" class="action-btn attack">攻撃</button>
+    </div>
+  </div>
+
+  <!-- Start Screen -->
+  <div id="startScreen" class="overlay">
+    <div class="overlay-content">
+      <h1>🐜 アント</h1>
+      <p class="subtitle">仲間を100匹集めて<br>蟻の巣を大きくしよう！</p>
+      <div class="rules">
+        <h3>遊び方</h3>
+        <ul>
+          <li>🕹️ 左下のスティックで移動</li>
+          <li>🍪 餌に近づいて巣に運ぶ</li>
+          <li>👥 大きい餌は仲間を呼んで運ぶ</li>
+          <li>⚔️ 敵には攻撃か仲間で対抗</li>
+          <li>🥚 巣の卵部屋で仲間が増える</li>
+          <li>🏠 やられたら巣から再出発</li>
+        </ul>
+      </div>
+      <button id="startBtn" class="big-btn">スタート</button>
+    </div>
+  </div>
+
+  <!-- Death Screen -->
+  <div id="deathScreen" class="overlay hidden">
+    <div class="overlay-content">
+      <h2>💤 巣で休んでいます…</h2>
+      <p id="respawnText">3</p>
+    </div>
+  </div>
+
+  <!-- Win Screen -->
+  <div id="winScreen" class="overlay hidden">
+    <div class="overlay-content">
+      <h1>🎉 クリア！</h1>
+      <p class="subtitle">100匹の仲間を集めました！<br>あなたの巣は立派なコロニーに成長！</p>
+      <button id="playAgainBtn" class="big-btn">もう一度遊ぶ</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/game.js"></script>
+</body>
+</html>

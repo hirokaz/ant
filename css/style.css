@@ -1,0 +1,369 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #1a1a1a;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Hiragino Kaku Gothic ProN", "メイリオ", Meiryo, sans-serif;
+  position: fixed;
+  touch-action: none;
+}
+
+#gameContainer {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: #4a7c2a;
+}
+
+#gameCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+/* HUD */
+#hud {
+  position: absolute;
+  top: env(safe-area-inset-top, 0);
+  left: 0;
+  right: 0;
+  padding: 10px 14px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.hud-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#antCount {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-weight: bold;
+  font-size: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  white-space: nowrap;
+}
+
+#hpContainer {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+#hpLabel {
+  color: #fff;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+#hpBar {
+  flex: 1;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+#hpFill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #ff4444, #ff7744);
+  border-radius: 6px;
+  transition: width 0.2s, background 0.2s;
+}
+
+#hpFill.medium {
+  background: linear-gradient(90deg, #ffaa44, #ffd244);
+}
+
+#hpFill.high {
+  background: linear-gradient(90deg, #44dd44, #88ee44);
+}
+
+/* Message Area */
+#messageArea {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+.message {
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: bold;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  animation: messageFade 2.5s forwards;
+  white-space: nowrap;
+}
+
+.message.warn {
+  background: rgba(180, 60, 30, 0.85);
+  border-color: rgba(255, 200, 200, 0.4);
+}
+
+.message.success {
+  background: rgba(60, 140, 50, 0.85);
+  border-color: rgba(220, 255, 220, 0.4);
+}
+
+@keyframes messageFade {
+  0% { opacity: 0; transform: translateY(-10px); }
+  10% { opacity: 1; transform: translateY(0); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-5px); }
+}
+
+/* Controls */
+#controls {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 200px;
+  pointer-events: none;
+  z-index: 5;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+#joystickHitArea {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  pointer-events: auto;
+  background: transparent;
+}
+
+#joystickBase {
+  position: absolute;
+  bottom: 35px;
+  left: 35px;
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  border: 3px solid rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+#joystickKnob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  border: 2px solid rgba(255, 255, 255, 1);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  transition: background 0.1s;
+}
+
+#joystickKnob.active {
+  background: rgba(170, 220, 100, 0.9);
+}
+
+#actionButtons {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.action-btn {
+  width: 78px;
+  height: 78px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.7);
+  background: rgba(80, 130, 60, 0.85);
+  color: #fff;
+  font-size: 14px;
+  font-weight: bold;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+  line-height: 1.1;
+  transition: transform 0.08s, background 0.1s;
+}
+
+.action-btn:active {
+  transform: scale(0.92);
+  background: rgba(120, 180, 90, 0.95);
+}
+
+.action-btn.attack {
+  background: rgba(180, 60, 50, 0.85);
+}
+
+.action-btn.attack:active {
+  background: rgba(220, 90, 70, 0.95);
+}
+
+.action-btn.cooldown {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Overlays */
+.overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.overlay-content {
+  background: linear-gradient(135deg, #5a3a1d, #3d2611);
+  border: 3px solid #8b6f3a;
+  border-radius: 20px;
+  padding: 24px 22px;
+  max-width: 360px;
+  width: 100%;
+  text-align: center;
+  color: #fff;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+}
+
+.overlay-content h1 {
+  font-size: 36px;
+  margin-bottom: 10px;
+  letter-spacing: 4px;
+}
+
+.overlay-content h2 {
+  font-size: 26px;
+  margin-bottom: 14px;
+}
+
+.overlay-content h3 {
+  font-size: 16px;
+  margin-bottom: 10px;
+  color: #ffd700;
+}
+
+.subtitle {
+  font-size: 15px;
+  margin-bottom: 18px;
+  line-height: 1.5;
+  color: #ffe6c1;
+}
+
+.rules {
+  text-align: left;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 12px 16px;
+  border-radius: 12px;
+  margin-bottom: 18px;
+}
+
+.rules ul {
+  list-style: none;
+}
+
+.rules li {
+  padding: 4px 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.big-btn {
+  padding: 14px 36px;
+  font-size: 18px;
+  font-weight: bold;
+  font-family: inherit;
+  background: linear-gradient(135deg, #ff8c42, #ff6b1c);
+  color: #fff;
+  border: 3px solid #ffb98a;
+  border-radius: 30px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  letter-spacing: 2px;
+  transition: transform 0.1s;
+}
+
+.big-btn:active {
+  transform: scale(0.95);
+}
+
+#respawnText {
+  font-size: 60px;
+  font-weight: bold;
+  color: #ffd700;
+  margin-top: 14px;
+}
+
+/* Small screens */
+@media (max-height: 600px) {
+  #controls {
+    height: 160px;
+  }
+  .action-btn {
+    width: 68px;
+    height: 68px;
+    font-size: 12px;
+  }
+  #joystickBase {
+    width: 90px;
+    height: 90px;
+    bottom: 25px;
+    left: 25px;
+  }
+  #joystickKnob {
+    width: 42px;
+    height: 42px;
+  }
+}
