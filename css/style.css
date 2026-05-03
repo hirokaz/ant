@@ -188,6 +188,63 @@ html, body {
   border: 1.5px solid rgba(255, 255, 255, 0.18);
 }
 
+#sfxToggle {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  font-size: 16px;
+  cursor: pointer;
+  pointer-events: auto;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+#sfxToggle:active { transform: scale(0.92); background: rgba(255, 255, 255, 0.25); }
+
+/* Friend-count bounce when a new ant hatches. */
+#antCount.bump {
+  animation: antCountBump 350ms ease-out;
+}
+@keyframes antCountBump {
+  0%   { transform: scale(1); color: #fff; }
+  35%  { transform: scale(1.25); color: #ffe04a; }
+  100% { transform: scale(1); color: #fff; }
+}
+
+/* Milestone celebration banner — fills horizontal space, big and bold. */
+#milestoneBanner {
+  position: absolute;
+  top: 200px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  pointer-events: none;
+  background: linear-gradient(135deg, #ffd700, #ff9d2d);
+  color: #2a1a08;
+  padding: 16px 28px;
+  border-radius: 22px;
+  font-size: 18px;
+  font-weight: bold;
+  border: 3px solid rgba(255, 240, 180, 1);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+  text-align: center;
+  letter-spacing: 1px;
+  animation: milestoneFlash 1.6s forwards;
+}
+#milestoneBanner.hidden { display: none; }
+@keyframes milestoneFlash {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(-12px) scale(0.8); }
+  20%  { opacity: 1; transform: translateX(-50%) translateY(0) scale(1.1); }
+  35%  { transform: translateX(-50%) translateY(0) scale(1); }
+  85%  { opacity: 1; }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(1); }
+}
+
 /* Tutorial hint — large, friendly, attention-grabbing. */
 #tutorialHint {
   position: absolute;
@@ -476,6 +533,74 @@ html, body {
 
 .big-btn:active {
   transform: scale(0.95);
+}
+
+#winRecord {
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 8px 0 16px;
+  text-align: left;
+  font-size: 13px;
+  color: #ffe6c1;
+  line-height: 1.7;
+}
+#winRecord .big {
+  font-size: 22px;
+  font-weight: bold;
+  color: #ffd700;
+  text-align: center;
+}
+#winRecord .new-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #ff7e3a, #ffd700);
+  color: #2a1a08;
+  font-weight: bold;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+  animation: newBadgePulse 1s infinite;
+}
+@keyframes newBadgePulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+#winRecord ol { padding-left: 22px; margin-top: 6px; font-size: 12px; }
+
+#skinPicker {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.32);
+  border-radius: 12px;
+  font-size: 12px;
+  color: #ffe6c1;
+}
+#skinPicker.hidden { display: none; }
+#skinPicker .label { display: block; margin-bottom: 6px; font-weight: bold; color: #ffd700; }
+#skinPicker .skins { display: flex; gap: 10px; justify-content: center; }
+.skin-chip {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
+  position: relative;
+  transition: transform 0.1s;
+}
+.skin-chip:active { transform: scale(0.92); }
+.skin-chip.active { border-color: #ffd700; box-shadow: 0 0 10px rgba(255, 215, 0, 0.7); }
+.skin-chip.locked { opacity: 0.35; cursor: not-allowed; }
+.skin-chip.locked::after {
+  content: '🔒';
+  position: absolute;
+  font-size: 12px;
+  bottom: -4px; right: -4px;
+  background: #1a1a1a;
+  border-radius: 50%;
+  padding: 2px;
 }
 
 #statsDisplay {

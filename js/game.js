@@ -47,6 +47,85 @@ const MAX_EXPANSION_STAGE = 19;        // 1000/50 - 1 (final stage = win)
 const WORLD_EXPAND_AMOUNT = 350;       // ≈25% of initial 1400 width
 // Order in which biome regions appear. After the 6th unlock the cycle repeats.
 const BIOME_SEQUENCE = ['mud', 'pond', 'flower', 'leaves', 'sand', 'concrete'];
+// Nest base upgrade levels — gated on cumulative deposits across the run.
+// These compound with colony levels (which gate on friend count).
+const NEST_LEVELS = [
+  { lv: 1, deposits: 30,  label: '卵の孵化が早くなった',
+    apply: (g) => { g.bonuses.hatchTimeMul *= 0.80; } },
+  { lv: 2, deposits: 80,  label: '巣の中で HP 回復',
+    apply: (g) => { g.bonuses.nestRegenPerSec = 0.5; } },
+  { lv: 3, deposits: 200, label: '仲間呼び出し +4',
+    apply: (g) => { g.maxCallSize = (g.maxCallSize || 12) + 4; } }
+];
+
+// Cosmetic ant skins for the player. Unlocked via persistent stats so a
+// player who has reached a milestone keeps the skin even after starting over.
+const SKIN_DEFS = [
+  { id: 'default', label: 'デフォルト', color: '#3a1f0a', highlight: '#6a3a18', glow: false,
+    unlock: () => true,
+    requirement: '初期から使用可' },
+  { id: 'red',     label: '赤アリ',     color: '#8b1a1a', highlight: '#d04646', glow: false,
+    unlock: (s) => s && s.milestones && s.milestones['100'],
+    requirement: '100匹達成' },
+  { id: 'gold',    label: '金アリ',     color: '#9d7820', highlight: '#ffd84a', glow: true,
+    unlock: (s) => s && s.milestones && s.milestones['500'],
+    requirement: '500匹達成' },
+  { id: 'blue',    label: '青アリ',     color: '#1a4488', highlight: '#5a98e0', glow: false,
+    unlock: (s) => s && s.bestClearMs && s.bestClearMs > 0,
+    requirement: '1000匹クリア' }
+];
+
+// Random mid-game events — fire every 90-180s once the colony is past 30 ants.
+// Some are instant (a treasure pops), some run for ~30s with multipliers that
+// feed back into spawn timers and movement speeds.
+const RANDOM_EVENTS = [
+  {
+    id: 'giantFood', label: '🍰 巨大餌出現! 探そう',
+    durationMs: 0,
+    apply: (g) => {
+      const zones = g.zones.filter(z => z.biome !== 'pond');
+      const zone = pickRand(zones.length ? zones : g.zones);
+      const x = rand(zone.x0 + 60, zone.x1 - 60);
+      const y = rand(zone.y0 + 60, zone.y1 - 60);
+      if (g.terrain && g.terrain.getAt(x, y) === 'rock') return;
+      const f = new Food(x, y, 'giant');
+      f.eggBonus = 1.3;
+      g.foods.push(f);
+    },
+    revert: () => {}
+  },
+  {
+    id: 'enemySwarm', label: '⚠️ 敵が集まってくる',
+    durationMs: 25000,
+    apply: (g) => { g._eventEnemyMul = 1.6; },
+    revert: (g) => { g._eventEnemyMul = 1.0; }
+  },
+  {
+    id: 'bonusTime', label: '✨ ボーナスタイム! 餌&ハート増加',
+    durationMs: 25000,
+    apply: (g) => {
+      for (let i = 0; i < 3; i++) g.spawnHealItem();
+      g._eventFoodMul = 1.7;
+    },
+    revert: (g) => { g._eventFoodMul = 1.0; }
+  },
+  {
+    id: 'storm', label: '⚡ 嵐! みんな速度ダウン',
+    durationMs: 25000,
+    apply: (g) => { g._eventPlayerSpeedMul = 0.85; g._eventEnemySpeedMul = 1.15; },
+    revert: (g) => { g._eventPlayerSpeedMul = 1.0; g._eventEnemySpeedMul = 1.0; }
+  }
+];
+
+// Mini-goal celebration milestones — purely cosmetic, big "you did it" moments.
+const MILESTONE_DEFS = [
+  { n: 10,  label: '🥉 10匹達成!' },
+  { n: 50,  label: '🥈 50匹達成! コロニー誕生' },
+  { n: 100, label: '🥇 100匹達成! 一人前のコロニー' },
+  { n: 200, label: '🌟 200匹達成!' },
+  { n: 500, label: '🏆 500匹達成! 大コロニー' }
+];
+
 // Colony levels — passive bonuses unlocked as the colony grows.
 // Each entry's `apply` mutates Game state. Levels are applied once, in order.
 const COLONY_LEVELS = [
@@ -223,8 +302,9 @@ class Ant {
       if (game.bonuses && game.bonuses.carrySpeedMul) speed *= game.bonuses.carrySpeedMul;
     }
 
-    // Apply terrain slowdown
+    // Apply terrain slowdown + event multipliers
     speed *= this._terrainSpeedMul || 1;
+    speed *= game._eventPlayerSpeedMul || 1;
 
     if (input.moving) {
       const dx = input.moveX;
@@ -408,6 +488,20 @@ class Ant {
 
   draw(ctx) {
     if (this.dead) return;
+    // Gold-skin glow (player only): drawn before any rotation.
+    if (this.isPlayer && this._skinGlow) {
+      ctx.save();
+      const t = (this.legPhase || 0) * 0.5;
+      const pulse = 0.55 + 0.45 * Math.sin(t);
+      const glow = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.size + 14);
+      glow.addColorStop(0, `rgba(255, 215, 60, ${0.55 * pulse})`);
+      glow.addColorStop(1, 'rgba(255, 215, 60, 0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size + 14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle + Math.PI / 2);
@@ -643,6 +737,7 @@ class Food {
       ? ` (✨ボーナス! +${eggsToSpawn - this.eggs})`
       : '';
     game.showMessage(`巣に運んだ！ 卵 +${eggsToSpawn}${bonusTxt}`, 'success');
+    if (game.audio) game.audio.play('deposit');
     if (game._advanceTutorial) game._advanceTutorial('deposit');
     if (game._statBump) game._statBump('deposits');
     if (game.saveGame) game.saveGame();
@@ -1330,7 +1425,8 @@ class Enemy {
     const dy = t.y - this.y;
     const d = Math.hypot(dx, dy);
     if (d > 0.5) {
-      const eff = spd * (this._terrainSpeedMul || 1);
+      const evMul = (game && game._eventEnemySpeedMul) || 1;
+      const eff = spd * (this._terrainSpeedMul || 1) * evMul;
       const nx = (dx / d) * eff;
       const ny = (dy / d) * eff;
       const newX = this.x + nx;
@@ -2301,6 +2397,88 @@ class TerrainGrid {
   }
 }
 
+// ---------- AudioFx ----------
+// Lightweight WebAudio-based SFX. No audio files required — all sounds are
+// short oscillator envelopes. Defaults to OFF for considerate commute play;
+// users can flip the 🔇 button in the HUD.
+class AudioFx {
+  constructor() {
+    this.enabled = false;
+    try { this.enabled = localStorage.getItem('ant_sfx') === 'true'; } catch (_) {}
+    this.ctx = null;
+    this.master = null;
+  }
+  _ensureCtx() {
+    if (this.ctx) return;
+    const C = window.AudioContext || window.webkitAudioContext;
+    if (!C) return;
+    try {
+      this.ctx = new C();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.35;
+      this.master.connect(this.ctx.destination);
+    } catch (_) { this.ctx = null; }
+  }
+  resume() {
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+  setEnabled(on) {
+    this.enabled = !!on;
+    try { localStorage.setItem('ant_sfx', this.enabled ? 'true' : 'false'); } catch (_) {}
+    if (this.enabled) { this._ensureCtx(); this.resume(); }
+  }
+  toggle() { this.setEnabled(!this.enabled); return this.enabled; }
+  play(name) {
+    if (!this.enabled) return;
+    this._ensureCtx();
+    if (!this.ctx) return;
+    this.resume();
+    const t = this.ctx.currentTime;
+    switch (name) {
+      case 'tap':       this._tone(t,        880, 0.05, 0.18, 'sine'); break;
+      case 'hit':       this._tone(t,        220, 0.08, 0.22, 'square'); break;
+      case 'food':      this._tone(t,        700, 0.07, 0.20, 'triangle');
+                        this._tone(t + 0.07, 1100, 0.08, 0.22, 'triangle'); break;
+      case 'deposit':   this._tone(t,        500, 0.09, 0.20, 'triangle');
+                        this._tone(t + 0.09,  750, 0.09, 0.22, 'triangle');
+                        this._tone(t + 0.18, 1000, 0.14, 0.22, 'triangle'); break;
+      case 'hatch':     this._tone(t,        420, 0.10, 0.18, 'sine');
+                        this._tone(t + 0.06,  650, 0.12, 0.20, 'sine'); break;
+      case 'kill':      this._tone(t,        320, 0.08, 0.22, 'sawtooth');
+                        this._tone(t + 0.06,  220, 0.10, 0.22, 'sawtooth'); break;
+      case 'raid':      this._tone(t,        220, 0.14, 0.30, 'sawtooth');
+                        this._tone(t + 0.15, 180, 0.18, 0.30, 'sawtooth'); break;
+      case 'milestone': this._tone(t,        523, 0.10, 0.22, 'triangle');
+                        this._tone(t + 0.10, 659, 0.10, 0.22, 'triangle');
+                        this._tone(t + 0.20, 784, 0.22, 0.25, 'triangle'); break;
+      case 'levelup':   this._tone(t,        440, 0.08, 0.20, 'sine');
+                        this._tone(t + 0.10, 660, 0.08, 0.20, 'sine');
+                        this._tone(t + 0.20, 880, 0.20, 0.22, 'sine'); break;
+      case 'expand':    this._tone(t,        300, 0.18, 0.22, 'triangle');
+                        this._tone(t + 0.18, 500, 0.20, 0.22, 'triangle'); break;
+      case 'heal':      this._tone(t,        700, 0.10, 0.20, 'sine');
+                        this._tone(t + 0.08, 950, 0.12, 0.22, 'sine'); break;
+      case 'win':       this._tone(t,        523, 0.12, 0.25, 'triangle');
+                        this._tone(t + 0.12, 659, 0.12, 0.25, 'triangle');
+                        this._tone(t + 0.24, 784, 0.12, 0.25, 'triangle');
+                        this._tone(t + 0.36, 1047, 0.30, 0.27, 'triangle'); break;
+    }
+  }
+  _tone(when, freq, dur, vol, type) {
+    if (!this.ctx) return;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, when);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+    o.connect(g); g.connect(this.master);
+    o.start(when); o.stop(when + dur + 0.05);
+  }
+}
+
 // ---------- Game ----------
 class Game {
   constructor() {
@@ -2318,6 +2496,7 @@ class Game {
     this.terrain = null;
     this.camera = { x: 0, y: 0, cx: 0, cy: 0, scale: 1 };
     this.cinematic = null;
+    this.audio = new AudioFx();
     this.viewW = 0;
     this.viewH = 0;
     this.dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -2433,6 +2612,7 @@ class Game {
       this.particles.push(new Particle(x, y, rand(-0.5, 0.5), rand(-1.5, -0.5), rand(800, 1400), '#ffe680', rand(2, 3)));
     }
 
+    if (this.audio) this.audio.play('expand');
     // Welcome gift: drop a heart in the new zone as a small reward.
     const giftX = (zone.x0 + zone.x1) / 2;
     const giftY = (zone.y0 + zone.y1) / 2;
@@ -2639,6 +2819,7 @@ class Game {
     this.raidPenaltyApplied = false;
     const bossLabel = includeBoss ? ' + 👑ボス' : '';
     this.showMessage(`⚠️ 巣に敵が来る！ (${count}体${bossLabel})`, 'warn', 3500);
+    if (this.audio) this.audio.play('raid');
   }
 
   endRaid(success) {
@@ -2735,6 +2916,8 @@ class Game {
     NEST_Y = 4400;
 
     this.player = new Ant(NEST_X, NEST_Y - 60, true);
+    // Apply selected skin (cosmetic) to player ant.
+    this._applyActiveSkin();
     this.friends = [];
     this.foods = [];
     this.enemies = [];
@@ -2758,13 +2941,24 @@ class Game {
     this.raidPenaltyApplied = false;
     // Call-window suspense: rises to 1.0 when calling friends, decays to 0 over ~5s.
     this.callStress = 0;
+    // Random mid-game events
+    this.eventTimer = rand(90000, 150000);
+    this.activeEvent = null;
+    this.activeEventTimer = 0;
+    this._eventEnemyMul = 1.0;
+    this._eventFoodMul = 1.0;
+    this._eventPlayerSpeedMul = 1.0;
+    this._eventEnemySpeedMul = 1.0;
     // Colony level + per-bonus tracking. Bonuses get re-applied on continue.
     this.colonyLevel = 0;
+    this.nestLevel = 0;
+    this.maxCallSize = 12;
     this.bonuses = {
       friendMaxHp: FRIEND_HP,
       friendAttack: FRIEND_ATTACK,
       carrySpeedMul: 1.0,
-      hatchTimeMul: 1.0
+      hatchTimeMul: 1.0,
+      nestRegenPerSec: 0
     };
     // Set of biome types unlocked so far (drives enemy/food unlock gates).
     this.unlockedBiomes = new Set();
@@ -2795,6 +2989,13 @@ class Game {
         this.colonyLevel = def.lv;
         def.apply(this);
       }
+      // Replay nest-level applies up to saved level.
+      const savedNestLv = saveData.nestLevel || 0;
+      for (const def of NEST_LEVELS) {
+        if (def.lv > savedNestLv) break;
+        this.nestLevel = def.lv;
+        def.apply(this);
+      }
       // Re-stamp each saved non-initial zone (initial zone is already stamped).
       for (const sz of saveData.zones || []) {
         const isInitial = sz.x0 === initialZone.x0 && sz.y0 === initialZone.y0
@@ -2815,6 +3016,8 @@ class Game {
       }
       // Restore HP (clamped to maxHp).
       this.player.hp = clamp(saveData.playerHp || this.player.maxHp, 1, this.player.maxHp);
+      // Restore milestone-shown set so we don't replay the banners.
+      this._milestoneShown = new Set(saveData.milestonesShown || []);
       // Skip "tutorial" hint messages — returning player.
       this.firstFoodSeen = true;
       this.firstEnemySeen = true;
@@ -2988,6 +3191,21 @@ class Game {
     };
     setupBtn(document.getElementById('attackBtn'), () => this.playerAttack());
     setupBtn(document.getElementById('callBtn'), () => this.playerCallFriends());
+
+    // SFX toggle (HUD icon, defaults to muted).
+    const sfxBtn = document.getElementById('sfxToggle');
+    if (sfxBtn) {
+      const renderIcon = () => { sfxBtn.textContent = this.audio.enabled ? '🔊' : '🔇'; };
+      renderIcon();
+      const toggle = (e) => {
+        if (e) { e.preventDefault(); e.stopPropagation(); }
+        this.audio.toggle();
+        renderIcon();
+        if (this.audio.enabled) this.audio.play('tap');
+      };
+      sfxBtn.addEventListener('click', toggle);
+      sfxBtn.addEventListener('touchstart', toggle, { passive: false });
+    }
   }
 
   setupUI() {
@@ -3002,8 +3220,9 @@ class Game {
         this.startGame(existing);
       });
     }
-    // Show "your record so far" panel if any stats exist.
+    // Show "your record so far" panel + skin picker if any stats exist.
     this._renderStatsPanel();
+    this._renderSkinPicker();
     startBtn.addEventListener('click', () => {
       // Starting fresh — drop the previous save (if any).
       this.clearSave();
@@ -3014,6 +3233,68 @@ class Game {
       this.clearSave();
       document.getElementById('winScreen').classList.add('hidden');
       this.startGame();
+    });
+  }
+
+  _appendHistoryAndRender(elapsedMs, isNewBest) {
+    let history = [];
+    try {
+      const raw = localStorage.getItem('ant_history');
+      if (raw) history = JSON.parse(raw) || [];
+    } catch (_) {}
+    if (elapsedMs > 0) {
+      history.unshift({ ms: elapsedMs, at: Date.now() });
+      history = history.slice(0, 5);
+      try { localStorage.setItem('ant_history', JSON.stringify(history)); } catch (_) {}
+    }
+    const fmt = (ms) => {
+      if (!ms) return '—';
+      const sec = Math.floor(ms / 1000);
+      const m = Math.floor(sec / 60), r = sec % 60;
+      return `${m}分${String(r).padStart(2, '0')}秒`;
+    };
+    const panel = document.getElementById('winRecord');
+    if (!panel) return;
+    const best = (this.stats && this.stats.bestClearMs) || elapsedMs;
+    const newBadge = isNewBest ? '<span class="new-badge">✨ NEW!</span>' : '';
+    const hist = history.map((h, i) => `<li>${fmt(h.ms)}</li>`).join('');
+    panel.innerHTML = `
+      <div class="big">⏱ 今回 ${fmt(elapsedMs)} ${newBadge}</div>
+      <div>🏆 自己ベスト: ${fmt(best)}</div>
+      ${history.length > 0 ? `<div>📜 直近の記録:</div><ol>${hist}</ol>` : ''}
+    `;
+  }
+
+  _renderSkinPicker() {
+    const panel = document.getElementById('skinPicker');
+    if (!panel) return;
+    // Refresh unlocked set in case stats updated since last visit.
+    const unlocked = this._checkSkinUnlocks();
+    const active = this._activeSkinId();
+    // Only show the picker if there's at least one non-default unlocked skin
+    // (no point in showing a single default chip).
+    if (unlocked.size <= 1) { panel.classList.add('hidden'); return; }
+    panel.classList.remove('hidden');
+    let html = '<span class="label">🎨 アリのスキン</span><div class="skins">';
+    for (const s of SKIN_DEFS) {
+      const has = unlocked.has(s.id);
+      const cls = `skin-chip${has ? '' : ' locked'}${active === s.id ? ' active' : ''}`;
+      const title = has ? s.label : `${s.label} (${s.requirement})`;
+      const inner = `<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${s.color};border:2px solid ${s.highlight};"></span>`;
+      html += `<button class="${cls}" data-skin="${s.id}" title="${title}">${inner}</button>`;
+    }
+    html += '</div>';
+    panel.innerHTML = html;
+    // Wire clicks
+    panel.querySelectorAll('.skin-chip').forEach(chip => {
+      chip.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = chip.getAttribute('data-skin');
+        if (chip.classList.contains('locked')) return;
+        this._setActiveSkin(id);
+        if (this.audio) this.audio.play('tap');
+        this._renderSkinPicker();
+      });
     });
   }
 
@@ -3040,6 +3321,49 @@ class Game {
     `;
   }
 
+  // ---------- Skins ----------
+  _activeSkinId() {
+    try { return localStorage.getItem('ant_skin_active') || 'default'; } catch (_) { return 'default'; }
+  }
+  _setActiveSkin(id) {
+    try { localStorage.setItem('ant_skin_active', id); } catch (_) {}
+    if (this.player) this._applyActiveSkin();
+  }
+  _applyActiveSkin() {
+    if (!this.player) return;
+    const id = this._activeSkinId();
+    const skin = SKIN_DEFS.find(s => s.id === id) || SKIN_DEFS[0];
+    this.player.color = skin.color;
+    this.player.bodyHighlight = skin.highlight;
+    this.player._skinGlow = !!skin.glow;
+  }
+  _checkSkinUnlocks() {
+    // Look at the persistent stats; show a one-shot toast on newly-unlocked skins.
+    const stats = this._loadStatsOnly();
+    let unlockedSet;
+    try {
+      unlockedSet = new Set(JSON.parse(localStorage.getItem('ant_skin_unlocked') || '["default"]'));
+    } catch (_) { unlockedSet = new Set(['default']); }
+    let newOnes = [];
+    for (const s of SKIN_DEFS) {
+      if (unlockedSet.has(s.id)) continue;
+      if (s.unlock(stats)) {
+        unlockedSet.add(s.id);
+        newOnes.push(s);
+      }
+    }
+    if (newOnes.length > 0) {
+      try { localStorage.setItem('ant_skin_unlocked', JSON.stringify([...unlockedSet])); } catch (_) {}
+      newOnes.forEach((s, i) => {
+        setTimeout(() => {
+          this.showMessage(`🎁 新スキン解放! ${s.label}`, 'success', 3500);
+          if (this.audio) this.audio.play('milestone');
+        }, i * 1200 + 500);
+      });
+    }
+    return unlockedSet;
+  }
+
   // ---------- Stats / Analytics (local only) ----------
   _freshStats() {
     return {
@@ -3062,6 +3386,40 @@ class Game {
     if (!this.stats.milestones[level]) {
       this.stats.milestones[level] = Math.round(performance.now() - this.stats.runStart);
     }
+  }
+
+  // ---------- Milestone celebrations ----------
+  _showMilestoneBanner(label) {
+    const el = document.getElementById('milestoneBanner');
+    if (el) {
+      el.textContent = label;
+      el.classList.remove('hidden');
+      // Restart CSS animation
+      el.style.animation = 'none';
+      void el.offsetWidth;
+      el.style.animation = '';
+      setTimeout(() => { el.classList.add('hidden'); }, 1700);
+    }
+    if (this.audio) this.audio.play('milestone');
+    // Bigger particle burst around the player.
+    if (this.player && !this.player.dead) {
+      for (let i = 0; i < 32; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = rand(1.5, 4.5);
+        this.particles.push(new Particle(
+          this.player.x + Math.cos(a) * 14,
+          this.player.y + Math.sin(a) * 14,
+          Math.cos(a) * s, Math.sin(a) * s - 1.5,
+          rand(800, 1300), '#ffe680', rand(2.5, 4)
+        ));
+      }
+    }
+    this.shakeTimer = 350;
+    this.shakeMag = 5;
+    // Persist milestone for skin unlock detection.
+    this._persistStatsOnly();
+    // Check skin unlocks (some are gated on milestones).
+    this._checkSkinUnlocks();
   }
 
   // ---------- Tutorial ----------
@@ -3115,6 +3473,8 @@ class Game {
         zones: this.zones.map(z => ({ x0: z.x0, y0: z.y0, x1: z.x1, y1: z.y1, biome: z.biome })),
         playerHp: Math.round(this.player.hp),
         colonyLevel: this.colonyLevel,
+        nestLevel: this.nestLevel,
+        milestonesShown: this._milestoneShown ? [...this._milestoneShown] : [],
         time: Date.now(),
         stats: this.stats ? this._statsForSave() : null
       };
@@ -3176,9 +3536,11 @@ class Game {
     if (closest) {
       const wasAlive = !closest.dead;
       closest.takeDamage(this.player.attackPower, this, this.player);
+      if (this.audio) this.audio.play('hit');
       if (wasAlive && closest.dead) {
         this._advanceTutorial('kill');
         this._statBump('kills');
+        if (this.audio) this.audio.play('kill');
       }
       this.spawnHitEffect(closest.x, closest.y);
       // Mark player as 'attacking-active' so friends join
@@ -3225,7 +3587,7 @@ class Game {
 
     // Pick the closest callable friends so the response feels responsive even
     // in late game when the colony has hundreds of ants scattered around.
-    const MAX_NEW_CALLS = 12;
+    const MAX_NEW_CALLS = this.maxCallSize || 12;
     const candidates = this.friends
       .filter(f => !f.dead && f.state !== 'carrying')
       .map(f => ({ f, d: dist(f, this.player) }))
@@ -3816,6 +4178,7 @@ class Game {
           }
         });
         this.spawnHealEffect(item.x, item.y);
+        if (this.audio) this.audio.play('heal');
         const friendsTxt = friendsHealed > 0 ? ` 仲間${friendsHealed}匹も回復` : '';
         this.showMessage(`💖 HP +${healed}!${friendsTxt}`, 'success', 1800);
       }
@@ -3839,6 +4202,22 @@ class Game {
         newAnt.state = 'idle';
         this.friends.push(newAnt);
         this.spawnHatchEffect(eg.x, eg.y);
+        if (this.audio) this.audio.play('hatch');
+        // Friend increase celebration: bounce the HUD count.
+        const ac = document.getElementById('antCount');
+        if (ac) {
+          ac.classList.remove('bump');
+          void ac.offsetWidth;
+          ac.classList.add('bump');
+        }
+        // Bright ring blast from the egg site.
+        for (let i = 0; i < 10; i++) {
+          const a = (i / 10) * Math.PI * 2;
+          this.particles.push(new Particle(
+            eg.x, eg.y, Math.cos(a) * 2.4, Math.sin(a) * 2.4 - 0.3,
+            500, '#ffe680', 2.4
+          ));
+        }
         return false;
       }
       return true;
@@ -3852,8 +4231,8 @@ class Game {
     this.particles = this.particles.filter(p => !p.dead);
     this.damageNumbers = this.damageNumbers.filter(d => !d.dead);
 
-    // Spawning
-    this.foodSpawnTimer -= dt;
+    // Spawning (event multipliers tweak the cadence).
+    this.foodSpawnTimer -= dt * (this._eventFoodMul || 1);
     if (this.foodSpawnTimer <= 0) {
       this.spawnFood();
       // Spawn an extra food at higher colony sizes to keep the pace.
@@ -3867,7 +4246,7 @@ class Game {
 
     // Enemy spawn timer ticks faster while call stress is active (raid pause kept normal).
     const stressMul = this.raidActive ? 1 : 1 + this.callStress;
-    this.enemySpawnTimer -= dt * stressMul;
+    this.enemySpawnTimer -= dt * stressMul * (this._eventEnemyMul || 1);
     if (this.enemySpawnTimer <= 0) {
       this.spawnEnemy();
       const totalAnts = 1 + this.friends.length;
@@ -3950,7 +4329,34 @@ class Game {
           this.raidImminent = false;
         }
       }
-    } else {
+    }
+
+    // Random mid-game events
+    if (this.activeEvent) {
+      this.activeEventTimer -= dt;
+      if (this.activeEventTimer <= 0) {
+        if (this.activeEvent.revert) this.activeEvent.revert(this);
+        this.showMessage(`⚡ ${this.activeEvent.label} 終了`, '', 1800);
+        this.activeEvent = null;
+        this.eventTimer = rand(90000, 180000);
+      }
+    } else if ((1 + this.friends.length) >= 30 && !this.raidActive) {
+      this.eventTimer -= dt;
+      if (this.eventTimer <= 0) {
+        const ev = pickRand(RANDOM_EVENTS);
+        if (ev.durationMs > 0) {
+          this.activeEvent = ev;
+          this.activeEventTimer = ev.durationMs;
+        } else {
+          this.eventTimer = rand(90000, 180000);
+        }
+        ev.apply(this);
+        this.showMessage(`⚡ イベント! ${ev.label}`, 'warn', 3500);
+        if (this.audio) this.audio.play('milestone');
+      }
+    }
+
+    if (this.raidActive) {
       // Drop any dead raiders from tracking; if all dead → success
       this.raidEnemies = this.raidEnemies.filter(e => !e.dead);
       // First raider entering the nest perimeter = "the raid arrived". If the
@@ -4012,7 +4418,8 @@ class Game {
     const total = 1 + this.friends.length;
     const stageLabel = this.expansionStage > 0 ? ` 🌍${this.expansionStage}` : '';
     const lvLabel = this.colonyLevel > 0 ? ` ⭐${this.colonyLevel}` : '';
-    document.getElementById('antCount').textContent = `🐜 ${total}${stageLabel}${lvLabel}`;
+    const nestLabel = this.nestLevel > 0 ? ` 🏠${this.nestLevel}` : '';
+    document.getElementById('antCount').textContent = `🐜 ${total}${stageLabel}${lvLabel}${nestLabel}`;
 
     // HP bar with digits + low-hp pulsing.
     const hpFill = document.getElementById('hpFill');
@@ -4080,6 +4487,53 @@ class Game {
       }
     }
 
+    // Mini-goal celebrations (cosmetic banners + sounds).
+    if (!this._milestoneShown) this._milestoneShown = new Set();
+    for (const def of MILESTONE_DEFS) {
+      if (this._milestoneShown.has(def.n)) continue;
+      if (total < def.n) break;
+      this._milestoneShown.add(def.n);
+      this._showMilestoneBanner(def.label);
+    }
+
+    // Nest level-up checks (gated on cumulative deposits).
+    const dep = (this.stats && this.stats.deposits) || 0;
+    for (const def of NEST_LEVELS) {
+      if (this.nestLevel >= def.lv) continue;
+      if (dep < def.deposits) break;
+      this.nestLevel = def.lv;
+      def.apply(this);
+      this.showMessage(`🏠 巣 Lv ${def.lv}! ${def.label}`, 'success', 3500);
+      if (this.audio) this.audio.play('levelup');
+      this.shakeTimer = 350;
+      this.shakeMag = 4;
+      // Burst at the nest center
+      for (let i = 0; i < 24; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = rand(1.4, 3.6);
+        this.particles.push(new Particle(
+          NEST_X, NEST_Y,
+          Math.cos(a) * s, Math.sin(a) * s - 1.2,
+          rand(700, 1200), '#ffd84a', rand(2, 3.5)
+        ));
+      }
+    }
+
+    // Nest in-nest HP regen (player only) once Lv 2 is unlocked.
+    if (this.bonuses && this.bonuses.nestRegenPerSec > 0
+        && this.player && !this.player.dead
+        && inNest(this.player.x, this.player.y)
+        && this.player.hp < this.player.maxHp) {
+      this._nestRegenAcc = (this._nestRegenAcc || 0) + dt * 0.001 * this.bonuses.nestRegenPerSec;
+      if (this._nestRegenAcc >= 1) {
+        const heal = Math.floor(this._nestRegenAcc);
+        this._nestRegenAcc -= heal;
+        this.player.hp = clamp(this.player.hp + heal, 0, this.player.maxHp);
+      }
+    } else {
+      this._nestRegenAcc = 0;
+    }
+
     // Colony level-up checks (passive bonuses).
     for (const def of COLONY_LEVELS) {
       if (this.colonyLevel >= def.lv) continue;
@@ -4087,6 +4541,7 @@ class Game {
       this.colonyLevel = def.lv;
       def.apply(this);
       this.showMessage(`⭐ Lv ${def.lv}! ${def.label}`, 'success', 3500);
+      if (this.audio) this.audio.play('levelup');
       this.shakeTimer = 350;
       this.shakeMag = 4;
       // Sparkle burst
@@ -4104,14 +4559,20 @@ class Game {
     // Win check
     if (total >= WIN_ANT_COUNT) {
       this.gameState = 'won';
-      // Record best clear time before clearing the save.
+      if (this.audio) this.audio.play('win');
+      // Record best clear time + history; render the win-screen panel.
+      let elapsed = 0;
+      let isNewBest = false;
       if (this.stats) {
-        const elapsed = Math.round(performance.now() - this.stats.runStart);
+        elapsed = Math.round(performance.now() - this.stats.runStart);
         if (!this.stats.bestClearMs || elapsed < this.stats.bestClearMs) {
           this.stats.bestClearMs = elapsed;
+          isNewBest = true;
         }
         this._persistStatsOnly();
       }
+      this._appendHistoryAndRender(elapsed, isNewBest);
+      this._checkSkinUnlocks();
       this.clearSave();
       document.getElementById('winScreen').classList.remove('hidden');
     }
