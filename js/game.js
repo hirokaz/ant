@@ -3686,20 +3686,21 @@ class Game {
   }
 
   setupUI() {
-    // Show "Continue" if a save exists.
     const continueBtn = document.getElementById('continueBtn');
     const startBtn = document.getElementById('startBtn');
-    const existing = this.loadSave();
-    if (existing && continueBtn) {
-      continueBtn.classList.remove('hidden');
+    // Always attach the click handler; visibility is driven separately by
+    // _renderStartPanels() so the button works even after returning to the
+    // title from an in-progress game.
+    if (continueBtn) {
       continueBtn.addEventListener('click', () => {
+        const data = this.loadSave();
+        if (!data) return;  // No (or invalid) save — silent no-op
         document.getElementById('startScreen').classList.add('hidden');
-        this.startGame(existing);
+        this.startGame(data);
       });
     }
     // Show "your record so far" panel + skin picker if any stats exist.
-    this._renderStatsPanel();
-    this._renderSkinPicker();
+    this._renderStartPanels();
     startBtn.addEventListener('click', () => {
       // Starting fresh — drop the previous save (if any).
       this.clearSave();
