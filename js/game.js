@@ -1443,6 +1443,129 @@ class GrassTuft {
   }
 }
 
+// ---------- Terrain ----------
+const TILE_SIZE = 80;
+const TERRAIN_TYPES = ['grass', 'pond', 'sand', 'mud', 'flower', 'leaves', 'concrete'];
+// Base colors used as fallback rendering before per-type detail kicks in.
+const TERRAIN_BASE_COLOR = {
+  grass:    null, // null = transparent (use existing background gradient)
+  pond:     '#3a78c0',
+  sand:     '#d6b878',
+  mud:      '#5a3a1f',
+  flower:   '#5fa53a',
+  leaves:   '#8a5530',
+  concrete: '#8e8e8e'
+};
+
+class TerrainGrid {
+  constructor(worldW, worldH) {
+    this.tileSize = TILE_SIZE;
+    this.cols = Math.ceil(worldW / TILE_SIZE);
+    this.rows = Math.ceil(worldH / TILE_SIZE);
+    this.tiles = [];
+    for (let r = 0; r < this.rows; r++) {
+      const row = new Array(this.cols).fill('grass');
+      this.tiles.push(row);
+    }
+    this.animPhase = 0;
+  }
+
+  // World-space coords → terrain type
+  getAt(x, y) {
+    const tx = Math.floor(x / this.tileSize);
+    const ty = Math.floor(y / this.tileSize);
+    if (ty < 0 || ty >= this.rows || tx < 0 || tx >= this.cols) return 'grass';
+    return this.tiles[ty][tx];
+  }
+
+  // Place a roughly elliptical blob of `type` around tile (tx, ty)
+  stampBlob(tx, ty, type, radiusTiles) {
+    const r = radiusTiles;
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const yy = ty + dy;
+        const xx = tx + dx;
+        if (yy < 0 || yy >= this.rows || xx < 0 || xx >= this.cols) continue;
+        // irregular boundary using noisy radius
+        const noisy = r + (((xx * 1973 + yy * 9277) % 100) / 100 - 0.5) * 1.4;
+        const d = Math.hypot(dx, dy);
+        if (d <= noisy) {
+          // Don't overwrite ponds with weak terrain
+          if (this.tiles[yy][xx] === 'pond' && type !== 'pond') continue;
+          this.tiles[yy][xx] = type;
+        }
+      }
+    }
+  }
+
+  // Regenerate terrain inside the world rectangle bounds = {x0,y0,x1,y1}.
+  // Patches are centered roughly inside bounds. Skips area near nest center.
+  regenerate(bounds, opts = {}) {
+    const x0 = Math.max(0, Math.floor(bounds.x0 / this.tileSize));
+    const y0 = Math.max(0, Math.floor(bounds.y0 / this.tileSize));
+    const x1 = Math.min(this.cols, Math.ceil(bounds.x1 / this.tileSize));
+    const y1 = Math.min(this.rows, Math.ceil(bounds.y1 / this.tileSize));
+    const nestSafeRadiusTiles = (NEST_RADIUS_BASE + 60) / this.tileSize;
+    const nestTx = NEST_X / this.tileSize;
+    const nestTy = NEST_Y / this.tileSize;
+
+    // Distribution of types to place. `weights` controls relative coverage.
+    const weights = opts.weights || {
+      sand:     2,
+      mud:      2,
+      flower:   2,
+      leaves:   3,
+      concrete: 1,
+      pond:     1
+    };
+    const flat = [];
+    Object.keys(weights).forEach(k => {
+      for (let i = 0; i < weights[k]; i++) flat.push(k);
+    });
+
+    const areaTiles = (x1 - x0) * (y1 - y0);
+    const numPatches = Math.max(2, Math.floor(areaTiles / 35));
+
+    for (let i = 0; i < numPatches; i++) {
+      const tx = Math.floor(rand(x0, x1));
+      const ty = Math.floor(rand(y0, y1));
+      // Skip if too close to nest
+      if (Math.hypot(tx - nestTx, ty - nestTy) < nestSafeRadiusTiles) continue;
+      const type = pickRand(flat);
+      const radius = type === 'pond' ? Math.floor(rand(2, 4))
+                  : type === 'concrete' ? Math.floor(rand(2, 4))
+                  : Math.floor(rand(2, 5));
+      this.stampBlob(tx, ty, type, radius);
+    }
+  }
+
+  tickAnim(dt) {
+    this.animPhase += dt * 0.001;
+  }
+
+  // Draw visible tiles only.
+  draw(ctx, camX, camY, viewW, viewH) {
+    const ts = this.tileSize;
+    const c0 = Math.max(0, Math.floor(camX / ts));
+    const r0 = Math.max(0, Math.floor(camY / ts));
+    const c1 = Math.min(this.cols, Math.ceil((camX + viewW) / ts) + 1);
+    const r1 = Math.min(this.rows, Math.ceil((camY + viewH) / ts) + 1);
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
+        const t = this.tiles[r][c];
+        if (t === 'grass') continue;
+        const x = c * ts;
+        const y = r * ts;
+        const color = TERRAIN_BASE_COLOR[t];
+        if (color) {
+          ctx.fillStyle = color;
+          ctx.fillRect(x, y, ts, ts);
+        }
+      }
+    }
+  }
+}
+
 // ---------- Game ----------
 class Game {
   constructor() {
@@ -1457,6 +1580,7 @@ class Game {
     this.particles = [];
     this.damageNumbers = [];
     this.grassTufts = [];
+    this.terrain = null;
     this.camera = { x: 0, y: 0 };
     this.viewW = 0;
     this.viewH = 0;
@@ -1530,6 +1654,13 @@ class Game {
     this.foodSpawnTimer = 1000;
     this.enemySpawnTimer = 8000;
     this.healSpawnTimer = 18000;
+    // Generate terrain (initial outdoor area only — north of nest)
+    this.terrain = new TerrainGrid(WORLD_WIDTH, WORLD_HEIGHT);
+    this.terrain.regenerate({
+      x0: 40, y0: 40,
+      x1: WORLD_WIDTH - 40,
+      y1: NEST_Y - NEST_RADIUS_BASE - 40
+    });
     // Initial food
     this.spawnFood();
     this.spawnFood();
@@ -2013,6 +2144,9 @@ class Game {
     }
     if (this.gameState !== 'playing') return;
 
+    // Update terrain animations (water ripples etc)
+    if (this.terrain) this.terrain.tickAnim(dt);
+
     // Update entities
     this.player.update(dt, this);
     this.friends.forEach(f => f.update(dt, this));
@@ -2245,6 +2379,11 @@ class Game {
         const sy = y + ((seed * 13) % 50);
         ctx.fillRect(sx, sy, 2, 2);
       }
+    }
+
+    // Terrain patches on top of base grass
+    if (this.terrain) {
+      this.terrain.draw(ctx, this.camera.x, this.camera.y, this.viewW, this.viewH);
     }
 
     // World boundary
