@@ -703,12 +703,33 @@ class Egg {
     this.maxTimer = FOOD_HATCH_TIME;
     this.hatched = false;
     this.wobble = Math.random() * Math.PI * 2;
+    this.maxHp = 30;
+    this.hp = this.maxHp;
+    this.dead = false;
+    this.size = 7;
+    this.invuln = 0;
   }
 
   update(dt) {
+    if (this.invuln > 0) this.invuln -= dt;
     this.timer -= dt;
     this.wobble += dt * 0.005;
     if (this.timer <= 0) this.hatched = true;
+  }
+
+  takeDamage(dmg, game, attacker) {
+    if (this.dead || this.hatched || this.invuln > 0) return;
+    this.hp -= dmg;
+    this.invuln = 100;
+    game.spawnDamageNumber(this.x, this.y - 10, dmg, '#ff7777');
+    // Alert nearby idle friends about the threat
+    if (game.alertNearbyFriends) game.alertNearbyFriends(this.x, this.y, 110, attacker);
+    if (this.hp <= 0) {
+      this.hp = 0;
+      this.dead = true;
+      game.spawnEnemyDeath(this.x, this.y, 0.5);
+      game.showMessage('卵が壊された…', 'warn', 1500);
+    }
   }
 
   draw(ctx) {
@@ -743,6 +764,18 @@ class Egg {
       ctx.stroke();
     }
     ctx.restore();
+
+    // Damage HP bar (only when injured)
+    if (this.hp < this.maxHp && !this.dead) {
+      const w = 16;
+      const h = 2;
+      const bx = this.x - w / 2;
+      const by = this.y - 11;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(bx - 1, by - 1, w + 2, h + 2);
+      ctx.fillStyle = '#ff5050';
+      ctx.fillRect(bx, by, w * (this.hp / this.maxHp), h);
+    }
   }
 }
 
@@ -769,7 +802,7 @@ const ENEMY_DEFS = {
 };
 
 class Enemy {
-  constructor(x, y, type = 'spider', powerScale = 1) {
+  constructor(x, y, type = 'spider', powerScale = 1, isRaider = false) {
     this.x = x;
     this.y = y;
     this.startX = x;
@@ -777,12 +810,14 @@ class Enemy {
     this.type = type;
     const def = ENEMY_DEFS[type] || ENEMY_DEFS.spider;
     this.powerScale = powerScale;
+    this.isRaider = isRaider;
+    // Raiders have boosted detection range to home in on the nest from far away
     this.maxHp = Math.round(def.maxHp * powerScale);
     this.hp = this.maxHp;
     this.attackPower = Math.round(def.attackPower * powerScale);
     this.speed = def.speed;
     this.size = Math.round(def.size * (1 + (powerScale - 1) * 0.4));
-    this.detectRange = def.detectRange;
+    this.detectRange = isRaider ? Math.max(def.detectRange, 9999) : def.detectRange;
     this.attackRange = def.attackRange;
     this.attackCooldownMax = def.attackCooldownMax;
     this.color = def.color;
@@ -811,6 +846,30 @@ class Enemy {
   }
 
   findTarget(game) {
+    if (this.isRaider) {
+      // Priority: nearest egg → nearest friend (incl. in-nest) → player → nest center
+      let best = null, bestD = Infinity;
+      for (const eg of game.eggs) {
+        if (eg.hatched || eg.dead) continue;
+        const d = dist(this, eg);
+        if (d < bestD) { bestD = d; best = eg; }
+      }
+      if (!best) {
+        for (const f of game.friends) {
+          if (f.dead) continue;
+          const d = dist(this, f);
+          if (d < bestD) { bestD = d; best = f; }
+        }
+      }
+      if (!best && !game.player.dead) {
+        best = game.player;
+      }
+      if (!best) {
+        best = { x: NEST_X, y: NEST_Y, _isNestCenter: true, dead: false };
+      }
+      this.target = best;
+      return;
+    }
     let candidate = null, closestDist = this.detectRange;
     if (!game.player.dead) {
       const d = dist(this, game.player);
@@ -856,11 +915,15 @@ class Enemy {
       }
     }
 
-    // Lose target if it enters nest or gets too far
-    if (this.target && (this.target.dead || inNest(this.target.x, this.target.y) ||
-        dist(this, this.target) > this.detectRange * 2.5)) {
-      this.target = null;
-      this.behaviorState = 'approach';
+    // Lose target if it enters nest or gets too far (raiders never give up).
+    if (this.target) {
+      const targetGone = this.target.dead;
+      const targetInNest = !this.target._isNestCenter && inNest(this.target.x, this.target.y);
+      const targetTooFar = dist(this, this.target) > this.detectRange * 2.5;
+      if (targetGone || (!this.isRaider && (targetInNest || targetTooFar))) {
+        this.target = null;
+        this.behaviorState = 'approach';
+      }
     }
 
     if (!this.target) {
@@ -891,7 +954,7 @@ class Enemy {
         this.moveToward(this.target, this.speed);
         moving = true;
       } else if (this.attackCooldown <= 0) {
-        this.target.takeDamage(this.attackPower, game, this);
+        if (this.target.takeDamage) this.target.takeDamage(this.attackPower, game, this);
         this.attackCooldown = this.attackCooldownMax;
         game.spawnHitEffect(this.target.x, this.target.y);
       }
@@ -933,17 +996,21 @@ class Enemy {
         const ny = Math.sin(this.dashAngle) * dashSpeed;
         const newX = this.x + nx;
         const newY = this.y + ny;
-        if (!inNest(newX, newY)) {
+        if (this.isRaider || !inNest(newX, newY)) {
           this.x = clamp(newX, 20, WORLD_WIDTH - 20);
           this.y = clamp(newY, 20, WORLD_HEIGHT - 20);
         }
         moving = true;
-        // Hit detection vs target and other ants in path
-        const allAnts = [game.player, ...game.friends];
-        for (const a of allAnts) {
-          if (a.dead || inNest(a.x, a.y)) continue;
+        // Hit detection vs target and other ants in path (raiders also hit in-nest friends/eggs)
+        const candidates = [game.player, ...game.friends];
+        if (this.isRaider) {
+          for (const eg of game.eggs) candidates.push(eg);
+        }
+        for (const a of candidates) {
+          if (a.dead) continue;
+          if (!this.isRaider && inNest(a.x, a.y)) continue;
           if (dist(this, a) < 24) {
-            a.takeDamage(this.attackPower, game, this);
+            if (a.takeDamage) a.takeDamage(this.attackPower, game, this);
             game.spawnHitEffect(a.x, a.y);
             this.behaviorTimer = 0;
             break;
@@ -1003,7 +1070,7 @@ class Enemy {
         moving = true;
         // Hit if close
         if (this.target && dist(this, this.target) < 20) {
-          this.target.takeDamage(this.attackPower, game, this);
+          if (this.target.takeDamage) this.target.takeDamage(this.attackPower, game, this);
           game.spawnHitEffect(this.target.x, this.target.y);
           this.behaviorState = 'retreat';
           this.behaviorTimer = 0;
@@ -1069,7 +1136,8 @@ class Enemy {
       const ny = (dy / d) * eff;
       const newX = this.x + nx;
       const newY = this.y + ny;
-      if (inNest(newX, newY)) {
+      // Raiders ignore the nest barrier and walk right in.
+      if (!this.isRaider && inNest(newX, newY)) {
         const dx2 = newX - NEST_X;
         const dy2 = newY - NEST_Y;
         const d2 = Math.hypot(dx2, dy2) || 1;
@@ -1110,6 +1178,22 @@ class Enemy {
       ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.arc(this.x, this.y + 3, this.size + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // Raider marker (bright red ring + smaller inner ring)
+    if (this.isRaider) {
+      ctx.save();
+      const pulse = 0.5 + 0.5 * Math.sin((this.actionPhase || 0) * 0.008);
+      ctx.strokeStyle = `rgba(255, 0, 30, ${0.55 + 0.3 * pulse})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y + 3, this.size + 10, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255, 100, 100, ${0.3 + 0.2 * pulse})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y + 3, this.size + 14, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
@@ -1904,6 +1988,9 @@ class Game {
     this.expansionStage = 0;
     this.shakeTimer = 0;
     this.shakeMag = 0;
+    this.raidTimer = 90000;  // first raid possible after ~90s
+    this.raidActive = false;
+    this.raidEnemies = [];
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -1994,6 +2081,69 @@ class Game {
     }
   }
 
+  // Begin a nest raid — a coordinated attack heading straight for the nest.
+  startRaid() {
+    if (this.raidActive) return;
+    if (this.friends.filter(f => !f.dead).length < 10) return;
+    const totalAnts = 1 + this.friends.length;
+    // Squad size scales with colony
+    const count = clamp(3 + Math.floor(totalAnts / 80), 3, 10);
+
+    // Pick a random edge to spawn the formation
+    const edge = Math.floor(Math.random() * 4);
+    let baseX, baseY, dx, dy;
+    if (edge === 0)      { baseX = rand(120, WORLD_WIDTH - 120); baseY = 60;             dx = 30; dy = 0;  }
+    else if (edge === 1) { baseX = 60;                            baseY = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); dx = 0; dy = 30; }
+    else                 { baseX = WORLD_WIDTH - 60;              baseY = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); dx = 0; dy = 30; }
+    if (edge === 0) {} // top
+    if (edge >= 3) { baseX = rand(120, WORLD_WIDTH - 120); baseY = NEST_Y - NEST_RADIUS_BASE - 60; dx = 30; dy = 0; }
+
+    this.raidEnemies = [];
+    for (let i = 0; i < count; i++) {
+      const sx = clamp(baseX + (i - count / 2) * dx, 40, WORLD_WIDTH - 40);
+      const sy = clamp(baseY + (i - count / 2) * dy, 40, WORLD_HEIGHT - 40);
+      // Type mix: mostly spider, some beetle, occasional wasp
+      const r = Math.random();
+      const type = r < 0.6 ? 'spider' : r < 0.85 ? 'beetle' : 'wasp';
+      const e = new Enemy(sx, sy, type, 1.0, true);
+      this.enemies.push(e);
+      this.raidEnemies.push(e);
+    }
+    this.raidActive = true;
+    this.shakeTimer = 700;
+    this.shakeMag = 4;
+    this.showMessage(`⚠️ 巣に敵が来る！ (${count}体)`, 'warn', 3500);
+  }
+
+  endRaid(success) {
+    this.raidActive = false;
+    this.raidEnemies = [];
+    if (success) {
+      this.showMessage('🛡️ 巣を守った！ 回復アイテムが現れた！', 'success', 3000);
+      // Spawn a heart bonus near the nest
+      let x, y, attempts = 0;
+      do {
+        x = NEST_X + rand(-160, 160);
+        y = NEST_Y - NEST_RADIUS_BASE - rand(20, 80);
+        attempts++;
+      } while ((y < 40 || x < 60 || x > WORLD_WIDTH - 60) && attempts < 8);
+      if (attempts < 8) this.healItems.push(new HealItem(x, y));
+    }
+    // Schedule next raid
+    this.raidTimer = rand(90000, 180000);
+  }
+
+  // Used by friend defense AI and Egg.takeDamage to wake nearby idle ants.
+  alertNearbyFriends(x, y, radius, attacker) {
+    for (const f of this.friends) {
+      if (f.dead || f.state === 'carrying') continue;
+      if (Math.hypot(f.x - x, f.y - y) > radius) continue;
+      f.state = 'attacking';
+      f.target = attacker || f.target;
+      f.callTimer = 8000;
+    }
+  }
+
   startGame() {
     // Reset world dimensions in case of replay after expansion
     WORLD_WIDTH = 1400;
@@ -2016,6 +2166,9 @@ class Game {
     this.expansionStage = 0;
     this.shakeTimer = 0;
     this.shakeMag = 0;
+    this.raidTimer = 90000;
+    this.raidActive = false;
+    this.raidEnemies = [];
     // Generate terrain (initial outdoor area only — north of nest)
     this.terrain = new TerrainGrid(WORLD_WIDTH, WORLD_HEIGHT);
     this.terrain.regenerate({
@@ -2644,6 +2797,7 @@ class Game {
 
     // Process eggs
     this.eggs = this.eggs.filter(eg => {
+      if (eg.dead) return false;
       if (eg.hatched) {
         // Hatch into friend ant
         const newAnt = new Ant(eg.x, eg.y, false);
@@ -2688,6 +2842,24 @@ class Game {
       if (!this.firstHealSeen && this.healItems.length > 0) {
         this.firstHealSeen = true;
         setTimeout(() => this.showMessage('💖 ハートはHP回復アイテム', '', 3000), 800);
+      }
+    }
+
+    // Raid logic
+    if (!this.raidActive) {
+      this.raidTimer -= dt;
+      if (this.raidTimer <= 0) {
+        this.startRaid();
+        if (!this.raidActive) {
+          // Failed precondition — try again later
+          this.raidTimer = rand(40000, 60000);
+        }
+      }
+    } else {
+      // Drop any dead raiders from tracking; if all dead → success
+      this.raidEnemies = this.raidEnemies.filter(e => !e.dead);
+      if (this.raidEnemies.length === 0) {
+        this.endRaid(true);
       }
     }
 
@@ -2779,6 +2951,53 @@ class Game {
 
     // Optional: world bounds indicator
     ctx.restore();
+
+    // Raid warning arrow — points toward nearest raider when raid active
+    if (this.player && this.gameState === 'playing' && this.raidActive && this.raidEnemies.length > 0) {
+      // Find nearest raider to player
+      let nr = null, nd = Infinity;
+      for (const e of this.raidEnemies) {
+        if (e.dead) continue;
+        const d = dist(this.player, e);
+        if (d < nd) { nd = d; nr = e; }
+      }
+      if (nr) {
+        const sx = nr.x - this.camera.x;
+        const sy = nr.y - this.camera.y;
+        const offscreen = sx < 0 || sy < 0 || sx > this.viewW || sy > this.viewH;
+        if (offscreen) {
+          // Clamp screen position to edge with padding
+          const cx = this.viewW / 2, cy = this.viewH / 2;
+          const dx = sx - cx, dy = sy - cy;
+          const a = Math.atan2(dy, dx);
+          const pad = 50;
+          const ex = clamp(cx + Math.cos(a) * 1000, pad, this.viewW - pad);
+          const ey = clamp(cy + Math.sin(a) * 1000, pad, this.viewH - pad);
+          ctx.save();
+          ctx.translate(ex, ey);
+          ctx.rotate(a);
+          const t = (this.time || 0) * 0.005;
+          ctx.fillStyle = `rgba(255, 50, 50, ${0.7 + 0.3 * Math.sin(t)})`;
+          ctx.strokeStyle = 'rgba(80,0,0,0.8)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(18, 0);
+          ctx.lineTo(-10, -12);
+          ctx.lineTo(-4, 0);
+          ctx.lineTo(-10, 12);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 14px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.rotate(-a); // unrotate for text
+          ctx.fillText('⚠', -2, 0);
+          ctx.restore();
+        }
+      }
+    }
 
     // Draw nest direction indicator if player far from nest
     if (this.player && this.gameState === 'playing') {
