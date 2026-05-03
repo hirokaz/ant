@@ -19,9 +19,21 @@
       <div id="antCount">🐜 1 / 1000</div>
       <div id="hpContainer">
         <div id="hpLabel">HP</div>
-        <div id="hpBar"><div id="hpFill"></div></div>
+        <div id="hpBar">
+          <div id="hpFill"></div>
+          <div id="hpText">100/100</div>
+        </div>
       </div>
     </div>
+    <div id="progressContainer">
+      <div id="progressBar"><div id="progressFill"></div><div id="progressMarkers"></div></div>
+    </div>
+    <div id="goalText">次の目標: 餌を運ぼう</div>
+  </div>
+
+  <!-- Tutorial Hint -->
+  <div id="tutorialHint" class="hidden">
+    <div id="tutorialText"></div>
   </div>
 
   <!-- Message Area -->
@@ -57,7 +69,8 @@
           <li>🛡️ 巣レイド: 赤い敵が巣に侵入してくる</li>
         </ul>
       </div>
-      <button id="startBtn" class="big-btn">スタート</button>
+      <button id="continueBtn" class="big-btn hidden" style="background: linear-gradient(135deg, #5fa53a, #468a26); border-color: #b6e07a; margin-bottom: 10px;">続きから</button>
+      <button id="startBtn" class="big-btn">最初から</button>
     </div>
   </div>
 

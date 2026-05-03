@@ -606,6 +606,8 @@ class Food {
       ? ` (✨ボーナス! +${eggsToSpawn - this.eggs})`
       : '';
     game.showMessage(`巣に運んだ！ 卵 +${eggsToSpawn}${bonusTxt}`, 'success');
+    if (game._advanceTutorial) game._advanceTutorial('deposit');
+    if (game.saveGame) game.saveGame();
   }
 
   draw(ctx) {
@@ -2399,6 +2401,9 @@ class Game {
 
     // Seed the new zone with at least one new food and one new enemy.
     this._seedNewBiomeContent(zone, biomeType);
+
+    // Persist after a major milestone.
+    this.saveGame();
   }
 
   // Pick a position for the next zone: a ZONE_SIZE square attached to one of
@@ -2585,6 +2590,7 @@ class Game {
     }
     // Schedule next raid
     this.raidTimer = rand(90000, 180000);
+    this.saveGame();
   }
 
   // Hidden raid-arrival penalty: silently kills a fraction of the colony
@@ -2648,7 +2654,7 @@ class Game {
     }
   }
 
-  startGame() {
+  startGame(saveData = null) {
     // Reset world dimensions in case of replay after expansion
     WORLD_WIDTH = 5000;
     WORLD_HEIGHT = 5500;
@@ -2696,17 +2702,58 @@ class Game {
     };
     this.zones.push(initialZone);
     this.terrain.fillRect(initialZone, 'grass');
+
+    // Restore from save (zones, biomes, friend count) if provided.
+    if (saveData) {
+      this.expansionStage = saveData.expansionStage || 0;
+      this.unlockedBiomes = new Set(saveData.unlockedBiomes || []);
+      // Re-stamp each saved non-initial zone (initial zone is already stamped).
+      for (const sz of saveData.zones || []) {
+        const isInitial = sz.x0 === initialZone.x0 && sz.y0 === initialZone.y0
+                       && sz.x1 === initialZone.x1 && sz.y1 === initialZone.y1;
+        if (isInitial) continue;
+        this.zones.push({ x0: sz.x0, y0: sz.y0, x1: sz.x1, y1: sz.y1, biome: sz.biome });
+        this.terrain.fillRect(sz, 'grass');
+        if (sz.biome && sz.biome !== 'grass') {
+          this.terrain.fillBiome(sz, sz.biome, 0.8);
+        }
+      }
+      // Restore friend count (positions are not persisted — they spawn idle near the nest).
+      const fc = clamp(saveData.friendCount || 0, 0, WIN_ANT_COUNT - 1);
+      for (let i = 0; i < fc; i++) {
+        const a = new Ant(NEST_X + rand(-80, 80), NEST_Y + rand(-50, 50), false);
+        a.state = 'idle';
+        this.friends.push(a);
+      }
+      // Restore HP (clamped to maxHp).
+      this.player.hp = clamp(saveData.playerHp || this.player.maxHp, 1, this.player.maxHp);
+      // Skip "tutorial" hint messages — returning player.
+      this.firstFoodSeen = true;
+      this.firstEnemySeen = true;
+      this.firstBigFoodSeen = true;
+      this.firstHealSeen = true;
+      this.showMessage(`💾 続きから (仲間 ${fc + 1}匹)`, 'success', 2200);
+    } else {
+      this.firstFoodSeen = false;
+      this.firstEnemySeen = false;
+      this.firstBigFoodSeen = false;
+      this.firstHealSeen = false;
+    }
+
+    // Tutorial: 3 short steps for first-time players. Saved players skip it.
+    let tutorialDone = false;
+    try { tutorialDone = localStorage.getItem('ant_tutorial_done') === 'true'; } catch (_) {}
+    this.tutorialStep = (saveData || tutorialDone) ? 0 : 1;
+    this._updateTutorialHint();
+
     // Snap the camera so the first frame doesn't pan from (0,0).
     this.camera.x = clamp(this.player.x - this.viewW / 2, 0, WORLD_WIDTH - this.viewW);
     this.camera.y = clamp(this.player.y - this.viewH / 2, 0, WORLD_HEIGHT - this.viewH);
     // Regenerate grass for the (reset) initial world
     this.generateGrass();
-    // Initial food
+    // Initial food (always present so the player can immediately act)
     this.spawnInitialFoods();
-    this.firstFoodSeen = false;
-    this.firstEnemySeen = false;
-    this.firstBigFoodSeen = false;
-    this.firstHealSeen = false;
+    this._lastSaveTime = 0;
   }
 
   setupControls() {
@@ -2814,16 +2861,26 @@ class Game {
     });
 
     // ---- Action buttons ----
+    const playTapEffect = (btn) => {
+      // Restart the CSS ring animation by toggling the class.
+      btn.classList.remove('tapped');
+      // Force reflow so re-adding the class restarts animation
+      // eslint-disable-next-line no-unused-expressions
+      void btn.offsetWidth;
+      btn.classList.add('tapped');
+    };
     const setupBtn = (btn, handler) => {
       btn.addEventListener('touchstart', (e) => {
         e.preventDefault();
         e.stopPropagation();
         if (this.gameState !== 'playing') return;
+        playTapEffect(btn);
         handler();
       }, { passive: false });
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         if (this.gameState !== 'playing') return;
+        playTapEffect(btn);
         handler();
       });
     };
@@ -2832,14 +2889,98 @@ class Game {
   }
 
   setupUI() {
-    document.getElementById('startBtn').addEventListener('click', () => {
+    // Show "Continue" if a save exists.
+    const continueBtn = document.getElementById('continueBtn');
+    const startBtn = document.getElementById('startBtn');
+    const existing = this.loadSave();
+    if (existing && continueBtn) {
+      continueBtn.classList.remove('hidden');
+      continueBtn.addEventListener('click', () => {
+        document.getElementById('startScreen').classList.add('hidden');
+        this.startGame(existing);
+      });
+    }
+    startBtn.addEventListener('click', () => {
+      // Starting fresh — drop the previous save (if any).
+      this.clearSave();
       document.getElementById('startScreen').classList.add('hidden');
       this.startGame();
     });
     document.getElementById('playAgainBtn').addEventListener('click', () => {
+      this.clearSave();
       document.getElementById('winScreen').classList.add('hidden');
       this.startGame();
     });
+  }
+
+  // ---------- Tutorial ----------
+  _updateTutorialHint() {
+    const hint   = document.getElementById('tutorialHint');
+    const text   = document.getElementById('tutorialText');
+    const callBtn   = document.getElementById('callBtn');
+    const attackBtn = document.getElementById('attackBtn');
+    if (!hint || !text) return;
+    callBtn   && callBtn.classList.remove('tutorial-pulse');
+    attackBtn && attackBtn.classList.remove('tutorial-pulse');
+    if (!this.tutorialStep) {
+      hint.classList.add('hidden');
+      return;
+    }
+    hint.classList.remove('hidden');
+    if (this.tutorialStep === 1) {
+      text.textContent = '① 🌾 餌に近づいて巣に運ぼう';
+    } else if (this.tutorialStep === 2) {
+      text.textContent = '② 👥 「呼ぶ」ボタンで仲間を集めよう';
+      callBtn && callBtn.classList.add('tutorial-pulse');
+    } else if (this.tutorialStep === 3) {
+      text.textContent = '③ ⚔️ 「攻撃」ボタンで敵を倒そう';
+      attackBtn && attackBtn.classList.add('tutorial-pulse');
+    }
+  }
+
+  _advanceTutorial(trigger) {
+    if (!this.tutorialStep) return;
+    if (trigger === 'deposit' && this.tutorialStep === 1) this.tutorialStep = 2;
+    else if (trigger === 'call' && this.tutorialStep === 2) this.tutorialStep = 3;
+    else if (trigger === 'kill' && this.tutorialStep === 3) {
+      this.tutorialStep = 0;
+      try { localStorage.setItem('ant_tutorial_done', 'true'); } catch (_) {}
+      this.showMessage('🎉 チュートリアル完了！コロニーを大きく育てよう', 'success', 3000);
+    } else {
+      return;  // no advancement
+    }
+    this._updateTutorialHint();
+  }
+
+  // ---------- Save / Load ----------
+  saveGame() {
+    if (!this.player || this.gameState !== 'playing') return;
+    try {
+      const save = {
+        v: 1,
+        friendCount: this.friends.filter(f => !f.dead).length,
+        expansionStage: this.expansionStage,
+        unlockedBiomes: [...this.unlockedBiomes],
+        zones: this.zones.map(z => ({ x0: z.x0, y0: z.y0, x1: z.x1, y1: z.y1, biome: z.biome })),
+        playerHp: Math.round(this.player.hp),
+        time: Date.now()
+      };
+      localStorage.setItem('ant_save', JSON.stringify(save));
+    } catch (_) { /* private mode etc — fail silently */ }
+  }
+  loadSave() {
+    try {
+      const raw = localStorage.getItem('ant_save');
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || data.v !== 1) return null;
+      // Quick sanity check
+      if (typeof data.friendCount !== 'number' || !Array.isArray(data.zones)) return null;
+      return data;
+    } catch (_) { return null; }
+  }
+  clearSave() {
+    try { localStorage.removeItem('ant_save'); } catch (_) {}
   }
 
   // ---------- Player Actions ----------
@@ -2861,6 +3002,7 @@ class Game {
 
     if (closest) {
       closest.takeDamage(this.player.attackPower, this, this.player);
+      if (closest.dead) this._advanceTutorial('kill');
       this.spawnHitEffect(closest.x, closest.y);
       // Mark player as 'attacking-active' so friends join
       this.player.state = 'attacking-active';
@@ -2928,6 +3070,7 @@ class Game {
     const total = switched + refreshed;
     if (total > 0) {
       this.spawnCallEffect();
+      this._advanceTutorial('call');
       // Mark a "call window" so spawns intensify during the suspenseful wait.
       this.callStress = 1;
       if (switched > 0) {
@@ -3376,11 +3519,23 @@ class Game {
     this.player.y = NEST_Y;
     this.player.hp = this.player.maxHp;
     this.player.dead = false;
-    this.player.invuln = 1500;
+    this.player.invuln = 2200;  // a touch longer so the flash is clearly visible
     this.player.state = 'player';
     this.gameState = 'playing';
     document.getElementById('deathScreen').classList.add('hidden');
-    this.showMessage('もう一度がんばろう！', 'success', 2000);
+    this.showMessage('💪 復活！', 'success', 1800);
+    // Burst of golden particles around the spawn point.
+    for (let i = 0; i < 28; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = rand(1.5, 4);
+      this.particles.push(new Particle(
+        NEST_X + Math.cos(a) * 8,
+        NEST_Y + Math.sin(a) * 8,
+        Math.cos(a) * s, Math.sin(a) * s - 1,
+        rand(700, 1100), '#ffe680', rand(2, 3.5)
+      ));
+    }
+    this.saveGame();
   }
 
   showMessage(text, type = '', duration = 2500) {
@@ -3524,6 +3679,27 @@ class Game {
       }
     }
 
+    // Enemy approach vibration: trigger a single short vibration when an
+    // enemy first crosses into attack range of the player (≤ 70px). The
+    // cooldown ensures we only buzz once per close call, not per frame.
+    if (this.player && !this.player.dead) {
+      const APPROACH_RANGE = 70;
+      this._lastApproachBuzz = (this._lastApproachBuzz || 0) - dt;
+      if (this._lastApproachBuzz <= 0) {
+        let close = false;
+        for (const e of this.enemies) {
+          if (e.dead) continue;
+          if (dist(this.player, e) <= APPROACH_RANGE) { close = true; break; }
+        }
+        if (close) {
+          this._lastApproachBuzz = 1500; // 1.5s cooldown
+          if (navigator.vibrate) {
+            try { navigator.vibrate(40); } catch (_) {}
+          }
+        }
+      }
+    }
+
     // Carry-time ambush: when a food is being carried, occasionally spawn an
     // extra enemy nearby. Skipped during raids to avoid overload.
     if (!this.raidActive) {
@@ -3591,6 +3767,13 @@ class Game {
       }
     }
 
+    // Periodic auto-save (every 30s) so passive progress is preserved.
+    this._lastSaveTime = (this._lastSaveTime || 0) + dt;
+    if (this._lastSaveTime > 30000) {
+      this._lastSaveTime = 0;
+      this.saveGame();
+    }
+
     // Update camera
     const targetCx = this.player.x - this.viewW / 2;
     const targetCy = this.player.y - this.viewH / 2;
@@ -3600,11 +3783,58 @@ class Game {
     // Update HUD
     const total = 1 + this.friends.length;
     const stageLabel = this.expansionStage > 0 ? ` 🌍${this.expansionStage}` : '';
-    document.getElementById('antCount').textContent = `🐜 ${total} / ${WIN_ANT_COUNT}${stageLabel}`;
+    document.getElementById('antCount').textContent = `🐜 ${total}${stageLabel}`;
+
+    // HP bar with digits + low-hp pulsing.
     const hpFill = document.getElementById('hpFill');
+    const hpText = document.getElementById('hpText');
     const hpRatio = this.player.hp / this.player.maxHp;
     hpFill.style.width = (hpRatio * 100) + '%';
-    hpFill.className = hpRatio > 0.6 ? 'high' : hpRatio > 0.3 ? 'medium' : '';
+    let hpClass;
+    if (hpRatio < 0.25) hpClass = 'low';
+    else if (hpRatio < 0.6) hpClass = 'medium';
+    else hpClass = 'high';
+    if (hpFill.className !== hpClass) hpFill.className = hpClass;
+    if (hpText) hpText.textContent = `${Math.ceil(this.player.hp)}/${this.player.maxHp}`;
+
+    // Colony progress bar with milestone markers and color tiers.
+    const progressFill = document.getElementById('progressFill');
+    if (progressFill) {
+      const ratio = clamp(total / WIN_ANT_COUNT, 0, 1);
+      progressFill.style.width = (ratio * 100) + '%';
+      const cls = ratio > 0.7 ? 'high' : ratio > 0.3 ? 'mid' : '';
+      if (progressFill.className !== cls) progressFill.className = cls;
+      // Add milestone markers once
+      const markers = document.getElementById('progressMarkers');
+      if (markers && !markers._initted) {
+        markers._initted = true;
+        for (let i = 1; i < 10; i++) {
+          const m = document.createElement('div');
+          m.className = 'progress-marker';
+          m.style.left = (i * 10) + '%';
+          markers.appendChild(m);
+        }
+      }
+    }
+
+    // Dynamic goal text — short next-step guidance.
+    const goal = document.getElementById('goalText');
+    if (goal) {
+      let text;
+      if (total < 4)         text = '🌾 餌を巣に運ぼう';
+      else if (total < 10)   text = '👥 「呼ぶ」で仲間を集めて大きな餌に挑戦';
+      else if (total < 20)   text = '⚔️ 敵を倒して餌をゲットしよう';
+      else if (total < 50)   text = '🛡 巣を狙う敵に注意！';
+      else if (total < 100)  text = `🌍 あと ${50 - (total % 50)} 匹で新エリア解放`;
+      else if (total < WIN_ANT_COUNT) {
+        const next = (Math.floor(total / 50) + 1) * 50;
+        const remain = next - total;
+        text = `🌍 次の解放まで あと ${remain} 匹 (${next}匹で${BIOME_SEQUENCE[(next/50 - 1) % BIOME_SEQUENCE.length]}エリア)`;
+      } else {
+        text = '🎉 1000匹達成！';
+      }
+      if (goal.textContent !== text) goal.textContent = text;
+    }
 
     // Field expansion check (every EXPANSION_THRESHOLD friends)
     const expectedStage = Math.min(MAX_EXPANSION_STAGE, Math.floor(total / EXPANSION_THRESHOLD));
@@ -3615,6 +3845,7 @@ class Game {
     // Win check
     if (total >= WIN_ANT_COUNT) {
       this.gameState = 'won';
+      this.clearSave();
       document.getElementById('winScreen').classList.remove('hidden');
     }
 
@@ -3786,6 +4017,44 @@ class Game {
           ctx.fillText('⚠', -2, 0);
           ctx.restore();
         }
+      }
+    }
+
+    // Approaching enemies (non-raid): show a small arrow at the screen edge
+    // for any nearby off-screen enemy that's about to close on the player.
+    if (this.player && this.gameState === 'playing' && !this.player.dead) {
+      const APPROACH_RANGE = 240;
+      for (const e of this.enemies) {
+        if (e.dead) continue;
+        if (this.raidActive && this.raidEnemies && this.raidEnemies.indexOf(e) !== -1) continue;
+        const d = dist(this.player, e);
+        if (d > APPROACH_RANGE) continue;
+        const sx = e.x - this.camera.x;
+        const sy = e.y - this.camera.y;
+        const offscreen = sx < 0 || sy < 0 || sx > this.viewW || sy > this.viewH;
+        if (!offscreen) continue;
+        const cx = this.viewW / 2, cy = this.viewH / 2;
+        const dx = sx - cx, dy = sy - cy;
+        const a = Math.atan2(dy, dx);
+        const pad = 38;
+        const ex = clamp(cx + Math.cos(a) * 1000, pad, this.viewW - pad);
+        const ey = clamp(cy + Math.sin(a) * 1000, pad, this.viewH - pad);
+        ctx.save();
+        ctx.translate(ex, ey);
+        ctx.rotate(a);
+        const t = (this.time || 0) * 0.006;
+        ctx.fillStyle = `rgba(255, 140, 60, ${0.55 + 0.25 * Math.sin(t)})`;
+        ctx.strokeStyle = 'rgba(80,30,0,0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(12, 0);
+        ctx.lineTo(-6, -8);
+        ctx.lineTo(-2, 0);
+        ctx.lineTo(-6, 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
       }
     }
 

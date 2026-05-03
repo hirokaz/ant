@@ -84,18 +84,33 @@ html, body {
 
 #hpBar {
   flex: 1;
-  height: 12px;
+  position: relative;
+  height: 16px;
   background: rgba(255, 255, 255, 0.15);
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
 #hpFill {
-  height: 100%;
+  position: absolute;
+  inset: 0;
   width: 100%;
   background: linear-gradient(90deg, #ff4444, #ff7744);
-  border-radius: 6px;
+  border-radius: 8px;
   transition: width 0.2s, background 0.2s;
+}
+
+#hpText {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: bold;
+  text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9);
+  pointer-events: none;
 }
 
 #hpFill.medium {
@@ -104,6 +119,101 @@ html, body {
 
 #hpFill.high {
   background: linear-gradient(90deg, #44dd44, #88ee44);
+}
+
+#hpFill.low {
+  background: linear-gradient(90deg, #c41818, #ff3838);
+  animation: hpLowPulse 0.8s infinite;
+}
+
+@keyframes hpLowPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Progress bar (colony growth) */
+#progressContainer {
+  margin-top: 6px;
+}
+
+#progressBar {
+  position: relative;
+  height: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 5px;
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+}
+
+#progressFill {
+  position: absolute;
+  inset: 0;
+  width: 0%;
+  background: linear-gradient(90deg, #ff8c42, #ffb84a);
+  border-radius: 4px;
+  transition: width 0.4s, background 0.4s;
+}
+
+#progressFill.mid { background: linear-gradient(90deg, #5fb83a, #8ed848); }
+#progressFill.high { background: linear-gradient(90deg, #ffd700, #ffe676); }
+
+#progressMarkers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+#progressMarkers::before,
+#progressMarkers::after {
+  content: '';
+}
+
+.progress-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  background: rgba(255,255,255,0.45);
+}
+
+#goalText {
+  margin-top: 6px;
+  display: inline-block;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffe6a0;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: bold;
+  border: 1.5px solid rgba(255, 255, 255, 0.18);
+}
+
+/* Tutorial hint — large, friendly, attention-grabbing. */
+#tutorialHint {
+  position: absolute;
+  top: 130px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  pointer-events: none;
+  background: linear-gradient(135deg, #ffd84a, #ffae3a);
+  color: #2a1a08;
+  padding: 12px 22px;
+  border-radius: 16px;
+  font-size: 15px;
+  font-weight: bold;
+  border: 2px solid rgba(255, 240, 180, 1);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  max-width: 90vw;
+  text-align: center;
+  animation: tutorialBob 1.6s ease-in-out infinite;
+}
+
+#tutorialHint.hidden { display: none; }
+
+@keyframes tutorialBob {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50%      { transform: translateX(-50%) translateY(-3px); }
 }
 
 /* Message Area */
@@ -214,11 +324,13 @@ html, body {
 }
 
 .action-btn {
+  position: relative;
   width: 78px;
   height: 78px;
   border-radius: 50%;
   border: 3px solid rgba(255, 255, 255, 0.7);
-  background: rgba(80, 130, 60, 0.85);
+  /* Default = call button (cooperative blue). Attack overrides below. */
+  background: rgba(58, 120, 192, 0.92);
   color: #fff;
   font-size: 14px;
   font-weight: bold;
@@ -227,19 +339,46 @@ html, body {
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
   line-height: 1.1;
   transition: transform 0.08s, background 0.1s;
+  overflow: visible;
 }
 
 .action-btn:active {
-  transform: scale(0.92);
-  background: rgba(120, 180, 90, 0.95);
+  transform: scale(0.90);
+  background: rgba(80, 160, 240, 1);
 }
 
 .action-btn.attack {
-  background: rgba(180, 60, 50, 0.85);
+  background: rgba(200, 50, 40, 0.92);
 }
 
 .action-btn.attack:active {
-  background: rgba(220, 90, 70, 0.95);
+  background: rgba(240, 80, 60, 1);
+}
+
+/* Pulsing ring expanding out from a tapped button */
+.action-btn.tapped::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.9);
+  animation: btnTapRing 350ms ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes btnTapRing {
+  0%   { transform: scale(0.95); opacity: 0.9; }
+  100% { transform: scale(1.6);  opacity: 0; }
+}
+
+/* Pulse highlight used by tutorial */
+.action-btn.tutorial-pulse {
+  animation: tutorialBtnPulse 1.0s infinite;
+}
+@keyframes tutorialBtnPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 220, 80, 0.0), 0 4px 10px rgba(0, 0, 0, 0.3); }
+  50%      { box-shadow: 0 0 0 12px rgba(255, 220, 80, 0.0), 0 4px 10px rgba(0, 0, 0, 0.3),
+                         0 0 24px 6px rgba(255, 220, 80, 0.65); }
 }
 
 .action-btn.cooldown {
