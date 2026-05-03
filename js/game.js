@@ -1039,6 +1039,7 @@ class Enemy {
               this.hp = 0;
               this.dead = true;
               game.spawnEnemyDeath(this.x, this.y);
+              game.dropFoodOnEnemyDeath(this);
               return;
             }
           }
@@ -1293,6 +1294,7 @@ class Enemy {
       this.hp = 0;
       this.dead = true;
       game.spawnEnemyDeath(this.x, this.y, this.powerScale > 1.05 ? 1.5 : 1);
+      game.dropFoodOnEnemyDeath(this);
     } else if (attacker) {
       this.target = attacker;
     }
@@ -2280,12 +2282,60 @@ class Game {
     const giftX = oldWidth + WORLD_EXPAND_AMOUNT / 2;
     const giftY = clamp(NEST_Y - NEST_RADIUS_BASE - 100, 80, NEST_Y - NEST_RADIUS_BASE - 60);
     this.healItems.push(new HealItem(giftX, giftY));
+
+    // Seed the new strip with at least one new food and one new enemy so the
+    // player can feel the area is "alive" the moment it appears.
+    this._seedNewBiomeContent(oldWidth, newWidth, biomeType);
+  }
+
+  // Place 1-2 fresh foods and 1-2 fresh enemies inside the newly opened biome
+  // strip. Used by expandWorld() so the new area always has visible content.
+  _seedNewBiomeContent(oldWidth, newWidth, biomeType) {
+    const yMin = 60;
+    const yMax = NEST_Y - NEST_RADIUS_BASE - 60;
+    const stripX0 = oldWidth + 20;
+    const stripX1 = newWidth - 30;
+
+    // --- Foods ---
+    // Type matches what's currently unlocked, with a bias for medium/large to
+    // make the new area feel more rewarding than the starting strip.
+    const stage = this.expansionStage;
+    const foodCount = stage <= 2 ? 1 : 2;
+    for (let i = 0; i < foodCount; i++) {
+      const x = rand(stripX0, stripX1);
+      const y = rand(yMin, yMax);
+      let type;
+      if (stage < 1) type = 'small';
+      else if (stage < 2) type = Math.random() < 0.5 ? 'small' : 'medium';
+      else if (stage < 3) type = Math.random() < 0.6 ? 'medium' : 'large';
+      else if (stage < 4) type = Math.random() < 0.5 ? 'medium' : 'large';
+      else type = Math.random() < 0.5 ? 'large' : 'huge';
+      const f = new Food(x, y, type);
+      const t = this.terrain ? this.terrain.getAt(x, y) : 'grass';
+      f.eggBonus = FOOD_TERRAIN_EGG_BONUS[t] || 1.0;
+      this.foods.push(f);
+    }
+
+    // --- Enemies ---
+    const enemyCount = 1 + (stage >= 3 && Math.random() < 0.5 ? 1 : 0);
+    const cfg = ENEMY_TERRAIN[biomeType] || ENEMY_TERRAIN.grass;
+    const hasMud = this.unlockedBiomes.has('mud');
+    const hasPond = this.unlockedBiomes.has('pond');
+    for (let i = 0; i < enemyCount; i++) {
+      const x = rand(stripX0, stripX1);
+      const y = rand(yMin, yMax);
+      // Prefer the biome's biased type when the unlock allows it, else spider.
+      let type = cfg.bias || 'spider';
+      if (type === 'beetle' && !hasMud) type = 'spider';
+      if (type === 'wasp'   && !hasPond) type = 'spider';
+      this.enemies.push(new Enemy(x, y, type, cfg.scale || 1.0));
+    }
   }
 
   // Begin a nest raid — a coordinated attack heading straight for the nest.
   startRaid() {
     if (this.raidActive) return;
-    if (this.friends.filter(f => !f.dead).length < 10) return;
+    if (this.friends.filter(f => !f.dead).length < 20) return;
     const totalAnts = 1 + this.friends.length;
     // Squad size scales with colony
     const count = clamp(3 + Math.floor(totalAnts / 80), 3, 10);
@@ -2315,6 +2365,8 @@ class Game {
     this.shakeMag = 4;
     this.raidWarningGiven = false;
     this.raidImminent = false;
+    this.raidArrived = false;
+    this.raidPenaltyApplied = false;
     this.showMessage(`⚠️ 巣に敵が来る！ (${count}体)`, 'warn', 3500);
   }
 
@@ -2323,6 +2375,8 @@ class Game {
     this.raidEnemies = [];
     this.raidWarningGiven = false;
     this.raidImminent = false;
+    this.raidArrived = false;
+    this.raidPenaltyApplied = false;
     if (success) {
       this.showMessage('🛡️ 巣を守った！ 回復アイテムが現れた！', 'success', 3000);
       // Spawn a heart bonus near the nest
@@ -2336,6 +2390,43 @@ class Game {
     }
     // Schedule next raid
     this.raidTimer = rand(90000, 180000);
+  }
+
+  // Hidden raid-arrival penalty: silently kills a fraction of the colony
+  // when the raid reaches the nest with the player still away. The user sees
+  // their colony count drop without an explicit message — that's intentional.
+  _applySilentRaidPenalty(fraction) {
+    const alive = this.friends.filter(f => !f.dead);
+    const toKill = Math.min(alive.length, Math.floor(alive.length * fraction));
+    if (toKill <= 0) return;
+    // Shuffle to pick random victims
+    for (let i = alive.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [alive[i], alive[j]] = [alive[j], alive[i]];
+    }
+    for (let k = 0; k < toKill; k++) {
+      const f = alive[k];
+      // Drop carried food cleanly so the carry state doesn't get stuck
+      if (f.carrying) {
+        f.carrying.carriers = f.carrying.carriers.filter(c => c !== f);
+        if (f.carrying.carriers.length < f.carrying.required) {
+          f.carrying.dropFood(this);
+        }
+        f.carrying = null;
+      }
+      f.hp = 0;
+      f.dead = true;
+      // Subtle dust puff — ant-colored, no damage number, no message.
+      for (let i = 0; i < 4; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = rand(0.6, 1.6);
+        this.particles.push(new Particle(
+          f.x, f.y,
+          Math.cos(a) * s, Math.sin(a) * s - 0.4,
+          rand(400, 700), '#5a3416', rand(1.5, 2.2)
+        ));
+      }
+    }
   }
 
   // Used by friend defense AI / Egg.takeDamage / friend death to wake nearby ants.
@@ -2389,6 +2480,8 @@ class Game {
     this.raidEnemies = [];
     this.raidWarningGiven = false;
     this.raidImminent = false;
+    this.raidArrived = false;
+    this.raidPenaltyApplied = false;
     // Call-window suspense: rises to 1.0 when calling friends, decays to 0 over ~5s.
     this.callStress = 0;
     // Set of biome types unlocked so far (drives enemy/food unlock gates).
@@ -2925,6 +3018,25 @@ class Game {
     this.enemies.push(new Enemy(x, y, type, cfg.scale || 1.0));
   }
 
+  // Reward for defeating an enemy: drop a small food where it died.
+  // Stronger / boss-empowered enemies drop a medium food instead so the kill
+  // feels meaningfully rewarding.
+  dropFoodOnEnemyDeath(enemy) {
+    const x = clamp(enemy.x, 30, WORLD_WIDTH - 30);
+    const y = clamp(enemy.y, 30, NEST_Y - NEST_RADIUS_BASE - 30);
+    // Skip if drop would land in nest (raiders dying inside the nest)
+    if (inNest(x, y)) return;
+    const isStrong = enemy.powerScale && enemy.powerScale > 1.1;
+    const stage = this.expansionStage;
+    let type = 'small';
+    if (isStrong && stage >= 1) type = 'medium';
+    const f = new Food(x, y, type);
+    f.eggBonus = this.terrain
+      ? (FOOD_TERRAIN_EGG_BONUS[this.terrain.getAt(x, y)] || 1.0)
+      : 1.0;
+    this.foods.push(f);
+  }
+
   spawnHealItem() {
     if (this.healItems.length >= 2) return;
     let x, y, attempts = 0;
@@ -3206,7 +3318,7 @@ class Game {
       this.raidTimer -= dt;
       // Pre-raid warning: heads-up ~8s before, second alarm ~3s before.
       const aliveFriends = this.friends.filter(f => !f.dead).length;
-      if (aliveFriends >= 10) {
+      if (aliveFriends >= 20) {
         if (!this.raidWarningGiven && this.raidTimer < 8000 && this.raidTimer > 0) {
           this.showMessage('⚠️ 敵の気配が近づいてくる…巣に戻る準備を！', 'warn', 4000);
           this.raidWarningGiven = true;
@@ -3228,6 +3340,15 @@ class Game {
     } else {
       // Drop any dead raiders from tracking; if all dead → success
       this.raidEnemies = this.raidEnemies.filter(e => !e.dead);
+      // First raider entering the nest perimeter = "the raid arrived". If the
+      // player isn't in the nest at that moment, a hidden penalty kicks in.
+      if (!this.raidArrived && this.raidEnemies.some(e => inNest(e.x, e.y))) {
+        this.raidArrived = true;
+        if (!this.raidPenaltyApplied && this.player && !this.player.dead && !inNest(this.player.x, this.player.y)) {
+          this.raidPenaltyApplied = true;
+          this._applySilentRaidPenalty(0.30);
+        }
+      }
       if (this.raidEnemies.length === 0) {
         this.endRaid(true);
       }
