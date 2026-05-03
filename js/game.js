@@ -39,9 +39,26 @@ const ATTACK_COOLDOWN = 500;
 const FOOD_HATCH_TIME = 7000;
 
 const WIN_ANT_COUNT = 1000;
-const FIRST_EXPANSION_AT = 20;          // First new area unlocks at 20 friends
-const EXPANSION_THRESHOLD = 50;         // Subsequent expansions every N more
-const MAX_EXPANSION_STAGE = 20;         // (1000 - 20) / 50 + 1 = 20
+// Friend-count thresholds for unlocking each expansion stage.
+// The gap grows with each stage — colonies carry more food as they grow,
+// so the bar for the next area should rise too.
+//   stage 0 →   0 (initial)
+//   stage 1 →  20 (gap 20)
+//   stage 2 →  45 (gap 25)
+//   stage 3 →  75 (gap 30)
+//   ... gap grows by +5 each stage.
+const EXPANSION_THRESHOLDS = (function () {
+  const arr = [0];
+  let total = 0, gap = 20;
+  while (total < 1100) {
+    total += gap;
+    arr.push(total);
+    gap += 5;
+  }
+  return arr;
+})();
+const FIRST_EXPANSION_AT = EXPANSION_THRESHOLDS[1]; // = 20
+const MAX_EXPANSION_STAGE = EXPANSION_THRESHOLDS.length - 1;
 const WORLD_EXPAND_AMOUNT = 350;
 // Order in which biome regions appear. After the 6th unlock the cycle repeats.
 const BIOME_SEQUENCE = ['mud', 'pond', 'flower', 'leaves', 'sand', 'concrete'];
@@ -785,7 +802,9 @@ class Ant {
 // ---------- Food ----------
 const FOOD_DEFS = {
   small:  { required: 1,  eggs: 1,  size: 9,  color: '#caa37c', label: '小' },
+  acorn:  { required: 2,  eggs: 3,  size: 14, color: '#a06030', label: 'どんぐり' },
   medium: { required: 3,  eggs: 4,  size: 16, color: '#5fa83a', label: '中' },
+  berry:  { required: 4,  eggs: 6,  size: 20, color: '#d63a4a', label: 'いちご' },
   large:  { required: 5,  eggs: 7,  size: 24, color: '#cc4848', label: '大' },
   huge:   { required: 8,  eggs: 11, size: 32, color: '#d4a050', label: '特大' },
   giant:  { required: 12, eggs: 18, size: 42, color: '#e07ab0', label: '超特大' },
@@ -988,6 +1007,84 @@ class Food {
       ctx.beginPath();
       ctx.ellipse(-this.size * 0.3, -this.size * 0.3, this.size * 0.3, this.size * 0.2, 0, 0, Math.PI * 2);
       ctx.fill();
+    } else if (this.type === 'acorn') {
+      // Acorn — round nut body with a textured cap on top.
+      const sz = this.size;
+      // Nut body
+      ctx.fillStyle = '#bf8050';
+      ctx.beginPath();
+      ctx.ellipse(0, sz * 0.15, sz * 0.75, sz * 0.85, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#985a25';
+      ctx.beginPath();
+      ctx.ellipse(sz * 0.18, sz * 0.4, sz * 0.4, sz * 0.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Highlight
+      ctx.fillStyle = 'rgba(255, 230, 180, 0.5)';
+      ctx.beginPath();
+      ctx.ellipse(-sz * 0.3, -sz * 0.1, sz * 0.25, sz * 0.4, -0.2, 0, Math.PI * 2);
+      ctx.fill();
+      // Cap (textured top)
+      ctx.fillStyle = '#5e3a1c';
+      ctx.beginPath();
+      ctx.arc(0, -sz * 0.45, sz * 0.85, 0, Math.PI, true);
+      ctx.fill();
+      // Cap dots
+      ctx.fillStyle = '#3a230f';
+      for (let i = 0; i < 5; i++) {
+        const dx = (-0.6 + i * 0.3) * sz;
+        const dy = -sz * (0.55 + (i % 2) * 0.05);
+        ctx.beginPath();
+        ctx.arc(dx, dy, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Stem
+      ctx.strokeStyle = '#3a2310';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, -sz * 1.1);
+      ctx.lineTo(0, -sz * 1.4);
+      ctx.stroke();
+    } else if (this.type === 'berry') {
+      // Strawberry — red bumpy heart-ish shape with green leaves on top.
+      const sz = this.size;
+      ctx.fillStyle = this.color;
+      ctx.beginPath();
+      ctx.moveTo(0, sz);
+      ctx.bezierCurveTo(sz * 1.2, sz * 0.5, sz * 1.0, -sz * 0.3, 0, -sz * 0.3);
+      ctx.bezierCurveTo(-sz * 1.0, -sz * 0.3, -sz * 1.2, sz * 0.5, 0, sz);
+      ctx.fill();
+      // Seeds
+      ctx.fillStyle = '#ffe680';
+      const seedSpots = [
+        [-0.4, -0.05], [0.3, -0.05], [-0.15, 0.25],
+        [0.45, 0.30], [-0.35, 0.55], [0.10, 0.55],
+        [-0.05, 0.80], [0.30, 0.75]
+      ];
+      for (const [sx, sy] of seedSpots) {
+        ctx.beginPath();
+        ctx.ellipse(sx * sz, sy * sz, 1.6, 1.0, 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Highlight
+      ctx.fillStyle = 'rgba(255, 220, 220, 0.5)';
+      ctx.beginPath();
+      ctx.ellipse(-sz * 0.4, sz * 0.15, sz * 0.18, sz * 0.30, -0.3, 0, Math.PI * 2);
+      ctx.fill();
+      // Leaves on top
+      ctx.fillStyle = '#3d8a25';
+      for (let i = -2; i <= 2; i++) {
+        const a = i * 0.45;
+        ctx.save();
+        ctx.translate(0, -sz * 0.35);
+        ctx.rotate(a);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(sz * 0.18, -sz * 0.32, 0, -sz * 0.42);
+        ctx.quadraticCurveTo(-sz * 0.18, -sz * 0.32, 0, 0);
+        ctx.fill();
+        ctx.restore();
+      }
     } else if (this.type === 'medium') {
       // Leaf
       ctx.fillStyle = this.color;
@@ -1269,6 +1366,27 @@ const ENEMY_DEFS = {
     maxHp: 28, attackPower: 6, speed: 2.5, size: 18,
     detectRange: 200, attackRange: 22, attackCooldownMax: 800,
     color: '#e0b020', headColor: '#3a2a08', legColor: '#1a1408', markColor: '#1a1408'
+  },
+  hornet: {
+    // Faster, redder wasp — bigger threat, hover-and-dive (reuses wasp brain).
+    maxHp: 55, attackPower: 11, speed: 3.0, size: 22,
+    detectRange: 230, attackRange: 22, attackCooldownMax: 700,
+    color: '#d04020', headColor: '#5a0e0e', legColor: '#2a0d0a', markColor: '#1a1408',
+    behavior: 'wasp'
+  },
+  scorpion: {
+    // Beetle-style charger with a venom sting; tougher than beetle.
+    maxHp: 130, attackPower: 16, speed: 1.05, size: 30,
+    detectRange: 170, attackRange: 34, attackCooldownMax: 1400,
+    color: '#7a4030', headColor: '#3a1a0d', legColor: '#1a0a05', markColor: '#a8704a',
+    behavior: 'beetle'
+  },
+  slug: {
+    // Very slow, very tanky melee — uses spider brain but plodding.
+    maxHp: 200, attackPower: 18, speed: 0.55, size: 30,
+    detectRange: 130, attackRange: 30, attackCooldownMax: 1700,
+    color: '#7a8830', headColor: '#3a4515', legColor: '#3a4515', markColor: '#a4b85a',
+    behavior: 'spider'
   }
 };
 
@@ -1288,6 +1406,7 @@ class Enemy {
     this.attackPower = Math.round(def.attackPower * powerScale);
     this.speed = def.speed;
     this.size = Math.round(def.size * (1 + (powerScale - 1) * 0.4));
+    this.behavior = def.behavior || type;
     this.detectRange = isRaider ? Math.max(def.detectRange, 9999) : def.detectRange;
     this.attackRange = def.attackRange;
     this.attackCooldownMax = def.attackCooldownMax;
@@ -1402,13 +1521,12 @@ class Enemy {
       this.findTarget(game);
     }
 
-    if (this.type === 'spider') {
-      this.updateSpider(dt, game);
-    } else if (this.type === 'beetle') {
-      this.updateBeetle(dt, game);
-    } else if (this.type === 'wasp') {
-      this.updateWasp(dt, game);
-    }
+    // Dispatch by behavior key (variants like hornet/scorpion/slug reuse
+    // a base AI). Falls back to the type when no override is provided.
+    const behavior = this.behavior || this.type;
+    if (behavior === 'spider')      this.updateSpider(dt, game);
+    else if (behavior === 'beetle') this.updateBeetle(dt, game);
+    else if (behavior === 'wasp')   this.updateWasp(dt, game);
 
     let da = this.targetAngle - this.angle;
     while (da > Math.PI) da -= Math.PI * 2;
@@ -1746,10 +1864,13 @@ class Enemy {
 
     if (this.type === 'spider') {
       this.drawSpider(ctx);
-    } else if (this.type === 'beetle') {
+    } else if (this.type === 'beetle' || this.type === 'scorpion') {
       this.drawBeetle(ctx);
-    } else if (this.type === 'wasp') {
+      if (this.type === 'scorpion') this._drawScorpionTail(ctx);
+    } else if (this.type === 'wasp' || this.type === 'hornet') {
       this.drawWasp(ctx);
+    } else if (this.type === 'slug') {
+      this.drawSlug(ctx);
     }
 
     ctx.restore();
@@ -1981,6 +2102,85 @@ class Enemy {
     ctx.beginPath();
     ctx.arc(-1.2 * s, -5.3 * s, 0.5 * s, 0, Math.PI * 2);
     ctx.arc(1.8 * s, -5.3 * s, 0.5 * s, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Slimy slug — used for the 'slug' enemy type. Round body + antennae +
+  // a wet trail. Draws inside the rotated/translated frame.
+  drawSlug(ctx) {
+    const s = this.size / 30;
+    const wob = Math.sin(this.legPhase * 1.4) * 0.6;
+    // Slime trail behind the body
+    ctx.fillStyle = 'rgba(170, 200, 80, 0.30)';
+    ctx.beginPath();
+    ctx.ellipse(0, 14 * s, 9 * s, 4 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Body (long oval)
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.ellipse(0, 4 * s + wob, 10 * s, 13 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Wet sheen on top
+    ctx.fillStyle = this.markColor;
+    ctx.beginPath();
+    ctx.ellipse(-2 * s, -2 * s, 4 * s, 7 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.30)';
+    ctx.beginPath();
+    ctx.ellipse(-3 * s, -4 * s, 1.6 * s, 3 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Head
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.arc(0, -8 * s, 5 * s, 0, Math.PI * 2);
+    ctx.fill();
+    // Eyes (small dots)
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath();
+    ctx.arc(-1.6 * s, -9 * s, 0.7 * s, 0, Math.PI * 2);
+    ctx.arc(1.6 * s, -9 * s, 0.7 * s, 0, Math.PI * 2);
+    ctx.fill();
+    // Two long antennae (slug-style stalks with eyes)
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 1.6 * s;
+    ctx.lineCap = 'round';
+    const aBob = wob * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(-1.5 * s, -10 * s);
+    ctx.quadraticCurveTo(-3.5 * s + aBob, -13 * s, -3 * s + aBob, -16 * s);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(1.5 * s, -10 * s);
+    ctx.quadraticCurveTo(3.5 * s - aBob, -13 * s, 3 * s - aBob, -16 * s);
+    ctx.stroke();
+    // Antenna eye-balls
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(-3 * s + aBob, -16 * s, 1.2 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(3 * s - aBob, -16 * s, 1.2 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath(); ctx.arc(-3 * s + aBob, -16 * s, 0.5 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(3 * s - aBob, -16 * s, 0.5 * s, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Curled stinger tail for scorpion (extra detail layered on top of beetle).
+  _drawScorpionTail(ctx) {
+    const s = this.size / 30;
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 3.2 * s;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(0, 12 * s);
+    ctx.quadraticCurveTo(8 * s, 14 * s, 10 * s, 8 * s);
+    ctx.quadraticCurveTo(11 * s, 3 * s, 8 * s, 0);
+    ctx.stroke();
+    // Sting tip
+    ctx.fillStyle = this.markColor;
+    ctx.beginPath();
+    ctx.arc(8 * s, 0, 1.8 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff8a0';
+    ctx.beginPath();
+    ctx.arc(8 * s, -0.6 * s, 0.7 * s, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -3112,10 +3312,11 @@ class Game {
     // Per-raider power scale: 1.0 → 1.8 across 0 → 1000 friends.
     const powerScale = 1.0 + Math.min(0.8, totalAnts / 1000);
     // Boss is ALWAYS present in a raid. Boss strength scales hard with the
-    // colony — small colonies face a modest boss, big colonies face a giant.
+    // colony — small colonies face a modest boss, late game faces a giant.
     const includeBoss = true;
-    // Boss multiplier: ×2.5 at 20 friends, up to ×4.5 at 1000.
-    const bossMul = 2.5 + Math.min(2.0, totalAnts / 500);
+    // Boss multiplier: 2.5x at 20 friends → 8.0x at 1000+ friends. The boss
+    // type also rotates so the visual changes as the colony grows.
+    const bossMul = 2.5 + Math.min(5.5, totalAnts / 180);
 
     // Pick the outermost unlocked zone (farthest from the nest) and spawn
     // the formation INSIDE it. Spawning at the world edge stuck raiders in
@@ -3147,10 +3348,16 @@ class Game {
     this.raidEnemies = [];
 
     // Boss raider — placed slightly behind the formation centre.
+    // Boss type rotates with colony size for visual variety:
+    //   <100 → beetle, <300 → scorpion, <600 → slug, 600+ → hornet swarm-leader
     if (includeBoss) {
       const bossX = clamp(baseX, 40, WORLD_WIDTH - 40);
       const bossY = clamp(baseY, 40, WORLD_HEIGHT - 40);
-      const boss = new Enemy(bossX, bossY, 'beetle', bossMul, true);
+      let bossType = 'beetle';
+      if (totalAnts >= 600 && this.unlockedBiomes.has('flower')) bossType = 'hornet';
+      else if (totalAnts >= 300 && this.unlockedBiomes.has('leaves')) bossType = 'slug';
+      else if (totalAnts >= 100 && this.unlockedBiomes.has('sand')) bossType = 'scorpion';
+      const boss = new Enemy(bossX, bossY, bossType, bossMul, true);
       boss.isBoss = true;
       this.enemies.push(boss);
       this.raidEnemies.push(boss);
@@ -4287,24 +4494,31 @@ class Game {
       x = bestX; y = bestY; terrainHere = bestTerrain;
     }
 
-    // Food types unlock with biome stages:
-    //   stage 0  → small / medium
-    //   stage 1+ → + large    (mud unlocked, 50 friends)
-    //   stage 2+ → + huge     (pond unlocked, 100 friends)
-    //   stage 3+ → + giant    (flower unlocked, 150 friends)
+    // Food types unlock with biome stages — each new area introduces a new
+    // species so the carry-targets stay visually fresh:
+    //   stage 0 → small + medium
+    //   stage 1 → + acorn  (mud)     2-carrier nut
+    //   stage 2 → + large  (pond)
+    //   stage 3 → + berry  (flower)  4-carrier sweet
+    //   stage 4 → + huge   (leaves)
+    //   stage 5+→ + giant  (sand+)
     const stage = this.expansionStage;
+    const pool = ['small', 'medium'];
+    if (stage >= 1) pool.push('acorn');
+    if (stage >= 2) pool.push('large');
+    if (stage >= 3) pool.push('berry');
+    if (stage >= 4) pool.push('huge');
+    if (stage >= 5) pool.push('giant');
     let type;
-    const r = Math.random();
-    if (stage < 1) {
-      type = r < 0.80 ? 'small' : 'medium';
-    } else if (stage < 2) {
-      type = r < 0.55 ? 'small' : r < 0.90 ? 'medium' : 'large';
-    } else if (stage < 3) {
-      type = r < 0.35 ? 'small' : r < 0.70 ? 'medium' : r < 0.92 ? 'large' : 'huge';
-    } else if (stage < 5) {
-      type = r < 0.25 ? 'small' : r < 0.50 ? 'medium' : r < 0.75 ? 'large' : r < 0.93 ? 'huge' : 'giant';
+    if (Math.random() < 0.35 && pool.length > 2) {
+      // Bias toward latest 2 unlocks so new areas show off the new food.
+      type = pickRand(pool.slice(Math.max(2, pool.length - 2)));
     } else {
-      type = r < 0.18 ? 'small' : r < 0.38 ? 'medium' : r < 0.62 ? 'large' : r < 0.85 ? 'huge' : 'giant';
+      // Weighted toward smaller foods so the field doesn't get too clogged.
+      const r = Math.random();
+      if      (r < 0.35) type = 'small';
+      else if (r < 0.65) type = pool.indexOf('medium') >= 0 ? 'medium' : 'small';
+      else               type = pickRand(pool);
     }
 
     // Terrain bias: shift type distribution. Skip biases that would pick a
@@ -4404,38 +4618,42 @@ class Game {
 
     const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
 
-    // Type unlocks are tied to biome unlocks: beetle on mud, wasp on pond.
-    const hasMud = this.unlockedBiomes.has('mud');
-    const hasPond = this.unlockedBiomes.has('pond');
-    const r = Math.random();
+    // Type unlocks tied to biome unlocks. Each new biome introduces a new
+    // enemy species, keeping each area visually fresh.
+    //   mud      → beetle
+    //   pond     → wasp
+    //   flower   → hornet (red wasp variant)
+    //   leaves   → slug   (slow tank)
+    //   sand     → scorpion (charger v2)
+    const has = (b) => this.unlockedBiomes.has(b);
+    const pool = ['spider'];
+    if (has('mud'))    pool.push('beetle');
+    if (has('pond'))   pool.push('wasp');
+    if (has('flower')) pool.push('hornet');
+    if (has('leaves')) pool.push('slug');
+    if (has('sand'))   pool.push('scorpion');
     let type;
-    if (!hasMud && !hasPond) {
-      type = 'spider';
-    } else if (hasMud && !hasPond) {
-      type = r < 0.65 ? 'spider' : 'beetle';
-    } else if (!hasMud && hasPond) {
-      type = r < 0.65 ? 'spider' : 'wasp';
+    // Bias the most-recently-unlocked types so they actually show up more
+    // when an area is fresh, then settle into uniform later.
+    if (Math.random() < 0.40 && pool.length > 1) {
+      // Pick from the latest 2 unlocks
+      const tail = pool.slice(Math.max(1, pool.length - 2));
+      type = pickRand(tail);
     } else {
-      // Both unlocked — full variety. Proportions weighted by stage depth.
-      if (this.expansionStage < 6) {
-        type = r < 0.45 ? 'spider' : r < 0.75 ? 'wasp' : 'beetle';
-      } else {
-        type = r < 0.35 ? 'spider' : r < 0.65 ? 'wasp' : 'beetle';
-      }
+      type = pickRand(pool);
     }
 
     // Apply terrain bias only if the biased type is actually unlocked.
-    if (cfg.bias && Math.random() < 0.5) {
-      const biasOK =
-        cfg.bias === 'spider' ||
-        (cfg.bias === 'beetle' && hasMud) ||
-        (cfg.bias === 'wasp'   && hasPond);
-      if (biasOK) type = cfg.bias;
+    if (cfg.bias && Math.random() < 0.4 && pool.indexOf(cfg.bias) !== -1) {
+      type = cfg.bias;
     }
 
     this.enemies.push(new Enemy(x, y, type, cfg.scale));
-    if (type === 'beetle') this._hintOnce('enemy_beetle', 'カブトムシ: 突進攻撃あり! 横にステップで避けよう');
-    if (type === 'wasp')   this._hintOnce('enemy_wasp',   'ハチ: 速くて空を飛ぶ. 近づいてきた瞬間に攻撃');
+    if (type === 'beetle')   this._hintOnce('enemy_beetle',   'カブトムシ: 突進攻撃! 横にステップで避けよう');
+    if (type === 'wasp')     this._hintOnce('enemy_wasp',     'ハチ: 速くて空を飛ぶ. 近づいてきた瞬間に攻撃');
+    if (type === 'hornet')   this._hintOnce('enemy_hornet',   'スズメバチ: ハチより速く強い! 注意');
+    if (type === 'slug')     this._hintOnce('enemy_slug',     'ナメクジ: 遅いがタフ. 数で囲もう');
+    if (type === 'scorpion') this._hintOnce('enemy_scorpion', 'サソリ: 突進攻撃あり! 高耐久');
   }
 
   // Carry-time ambush spawn: place an enemy at a random angle from (cx, cy),
@@ -5122,12 +5340,13 @@ class Game {
     const goal = document.getElementById('goalText');
     if (goal) {
       const deposits = (this.stats && this.stats.deposits) || 0;
-      // Compute next-area threshold (20, 70, 120, ...)
+      // Next-area threshold from the dynamic table.
       let nextArea = -1;
-      if (total >= FIRST_EXPANSION_AT) {
-        const stagesPast = Math.floor((total - FIRST_EXPANSION_AT) / EXPANSION_THRESHOLD);
-        const candidate = FIRST_EXPANSION_AT + EXPANSION_THRESHOLD * (stagesPast + 1);
-        if (candidate <= WIN_ANT_COUNT) nextArea = candidate;
+      for (let i = 1; i < EXPANSION_THRESHOLDS.length; i++) {
+        if (EXPANSION_THRESHOLDS[i] > total) {
+          nextArea = EXPANSION_THRESHOLDS[i];
+          break;
+        }
       }
       let text;
       if (deposits < 5) {
@@ -5156,10 +5375,14 @@ class Game {
       if (goal.textContent !== text) goal.textContent = text;
     }
 
-    // Field expansion check (first @ 20, then every EXPANSION_THRESHOLD friends)
-    const expectedStage = total >= FIRST_EXPANSION_AT
-      ? Math.min(MAX_EXPANSION_STAGE, 1 + Math.floor((total - FIRST_EXPANSION_AT) / EXPANSION_THRESHOLD))
-      : 0;
+    // Field expansion check — find the highest stage whose threshold has
+    // been crossed by the current friend count.
+    let expectedStage = 0;
+    for (let i = 1; i < EXPANSION_THRESHOLDS.length; i++) {
+      if (total >= EXPANSION_THRESHOLDS[i]) expectedStage = i;
+      else break;
+    }
+    if (expectedStage > MAX_EXPANSION_STAGE) expectedStage = MAX_EXPANSION_STAGE;
     while (expectedStage > this.expansionStage && total < WIN_ANT_COUNT) {
       this.expandWorld();
     }
