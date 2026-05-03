@@ -2379,9 +2379,7 @@ class Game {
     // Regenerate grass for the (reset) initial world
     this.generateGrass();
     // Initial food
-    this.spawnFood();
-    this.spawnFood();
-    this.spawnFood();
+    this.spawnInitialFoods();
     this.firstFoodSeen = false;
     this.firstEnemySeen = false;
     this.firstBigFoodSeen = false;
@@ -2680,6 +2678,24 @@ class Game {
   }
 
   // ---------- Spawning ----------
+  // Initial foods placed at the start of a fresh game: 3 small (1-carrier)
+  // pieces planted around the nest within easy reach so the player can
+  // immediately make progress without scouring the field.
+  spawnInitialFoods() {
+    const segment = Math.PI / 3;  // 60° each, fanned across the north hemisphere
+    for (let i = 0; i < 3; i++) {
+      const a = Math.PI + (i + 0.5) * segment + rand(-segment / 4, segment / 4);
+      const r = rand(NEST_RADIUS_BASE + 90, NEST_RADIUS_BASE + 200);
+      const x = clamp(NEST_X + Math.cos(a) * r, 60, WORLD_WIDTH - 60);
+      const y = clamp(NEST_Y + Math.sin(a) * r, 60, NEST_Y - NEST_RADIUS_BASE - 60);
+      const f = new Food(x, y, 'small');
+      f.eggBonus = this.terrain
+        ? (FOOD_TERRAIN_EGG_BONUS[this.terrain.getAt(x, y)] || 1.0)
+        : 1.0;
+      this.foods.push(f);
+    }
+  }
+
   spawnFood() {
     // Late-game allows more concurrent foods on the field.
     const cap = MAX_FOODS + Math.min(8, Math.floor(this.friends.length / 100));
@@ -2690,6 +2706,14 @@ class Game {
       grass: 1.0, pond: 0, sand: 0.6, mud: 0.4, flower: 2.5, leaves: 1.2, concrete: 0.5
     };
 
+    // Early stages keep food close to the nest so the player can find easy
+    // wins right away. The radius grows as the colony expands.
+    const _stage = this.expansionStage;
+    const maxFromNest = _stage === 0 ? 380
+                      : _stage === 1 ? 580
+                      : _stage === 2 ? 800
+                      : Infinity;
+
     // Find a candidate position weighted by terrain. Reject pond cells.
     // Keep best-seen candidate so we always place something when possible.
     let x = 0, y = 0, terrainHere = 'grass', accepted = false;
@@ -2697,7 +2721,9 @@ class Game {
     for (let attempt = 0; attempt < 14; attempt++) {
       x = rand(60, WORLD_WIDTH - 60);
       y = rand(60, NEST_Y - NEST_RADIUS_BASE - 60);
-      if (Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 80) continue;
+      const dn = Math.hypot(x - NEST_X, y - NEST_Y);
+      if (dn < NEST_RADIUS_BASE + 80) continue;
+      if (dn > maxFromNest) continue;
       terrainHere = this.terrain ? this.terrain.getAt(x, y) : 'grass';
       const w = FOOD_TERRAIN_WEIGHT[terrainHere] ?? 1.0;
       if (w <= 0) continue;
