@@ -54,7 +54,8 @@ const POWERUP_DEFS = {
   strong:  { icon: '🗡',  label: '強化アゴ',   durationMs: 10000, glowColor: 'rgba(255, 100, 100, 0.55)', auraColor: '255, 100, 100' },
   invuln:  { icon: '✨',  label: '無敵',       durationMs: 5000,  glowColor: 'rgba(160, 240, 255, 0.55)', auraColor: '160, 240, 255' },
   terrain: { icon: '🛡',  label: '地形無効',   durationMs: 12000, glowColor: 'rgba(140, 220, 200, 0.55)', auraColor: '140, 220, 200' },
-  giant:   { icon: '🦣',  label: '巨大化',     durationMs: 10000, glowColor: 'rgba(220, 130, 255, 0.55)', auraColor: '220, 130, 255' }
+  giant:   { icon: '🦣',  label: '巨大化',     durationMs: 10000, glowColor: 'rgba(220, 130, 255, 0.55)', auraColor: '220, 130, 255' },
+  radar:   { icon: '🧭',  label: '餌レーダー', durationMs: 15000, glowColor: 'rgba(120, 220, 120, 0.55)', auraColor: '120, 220, 120' }
 };
 const POWERUP_TYPES = Object.keys(POWERUP_DEFS);
 
@@ -5311,6 +5312,51 @@ class Game {
 
     // Optional: world bounds indicator
     ctx.restore();
+
+    // Radar power-up: small green arrows at the screen edge for each
+    // off-screen uncarried food, so the player can plan a route.
+    if (this.player && this.gameState === 'playing' && this.activePowerUp === 'radar') {
+      const cx = this.viewW / 2, cy = this.viewH / 2;
+      const pad = 28;
+      let drawn = 0;
+      for (const f of this.foods) {
+        if (f.deposited || f.beingCarried) continue;
+        if (drawn >= 8) break; // cap to avoid clutter
+        const sx = f.x - this.camera.x;
+        const sy = f.y - this.camera.y;
+        const onscreen = sx >= 0 && sy >= 0 && sx <= this.viewW && sy <= this.viewH;
+        if (onscreen) continue;
+        const dx = sx - cx, dy = sy - cy;
+        const a = Math.atan2(dy, dx);
+        const ex = clamp(cx + Math.cos(a) * 1000, pad, this.viewW - pad);
+        const ey = clamp(cy + Math.sin(a) * 1000, pad, this.viewH - pad);
+        const t = (this.time || 0) * 0.006;
+        const pulse = 0.65 + 0.35 * Math.sin(t + drawn);
+        ctx.save();
+        ctx.translate(ex, ey);
+        ctx.rotate(a);
+        // Small arrow
+        ctx.fillStyle = `rgba(110, 220, 110, ${0.65 * pulse})`;
+        ctx.strokeStyle = 'rgba(20, 60, 20, 0.8)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(11, 0);
+        ctx.lineTo(-7, -7);
+        ctx.lineTo(-2, 0);
+        ctx.lineTo(-7, 7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // Food-type indicator dot
+        ctx.rotate(-a);
+        ctx.fillStyle = f.color || '#caa37c';
+        ctx.beginPath();
+        ctx.arc(0, 0, 2.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        drawn++;
+      }
+    }
 
     // Expansion direction arrow — big golden "→ 🌍 NEW" for 5s after a new
     // zone unlocks, so the player can find their way after the cinematic ends.
