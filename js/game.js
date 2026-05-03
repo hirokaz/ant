@@ -222,16 +222,21 @@ class Ant {
         this.moveToward(this.target, this.speed * 0.95);
         moving = true;
       } else if (this.attackCooldown <= 0) {
-        this.target.takeDamage(this.attackPower, game, this);
+        if (this.target.takeDamage) this.target.takeDamage(this.attackPower, game, this);
         this.attackCooldown = 700;
         game.spawnHitEffect(this.target.x, this.target.y);
       }
       this._moving = moving;
       return;
     } else if (this.state === 'attacking') {
-      // Target dead or gone
-      this.state = 'follow';
+      // Target dead or gone — defenders return to nest and idle, others follow player.
       this.target = null;
+      if (inNest(this.x, this.y)) {
+        this.state = 'idle';
+      } else {
+        this.state = 'follow';
+        this.callTimer = 5000;
+      }
     }
 
     if (this.state === 'follow') {
@@ -269,7 +274,28 @@ class Ant {
       return;
     }
 
-    // idle: wander near nest
+    // idle: defend nest if a raider is inside, otherwise wander.
+    // 1) Defend against raiders that breached the nest perimeter
+    let defenseTarget = null, ddBest = 200;
+    for (const e of game.enemies) {
+      if (e.dead) continue;
+      // Engage in-nest enemies (raiders) or any nearby enemy hugging the perimeter
+      const inN = inNest(e.x, e.y);
+      const d = dist(this, e);
+      const nearPerimeter = !inN && Math.hypot(e.x - NEST_X, e.y - NEST_Y) < NEST_RADIUS_BASE + 30;
+      if ((inN || nearPerimeter) && d < ddBest) {
+        defenseTarget = e;
+        ddBest = d;
+      }
+    }
+    if (defenseTarget) {
+      this.state = 'attacking';
+      this.target = defenseTarget;
+      this._moving = false;
+      return;
+    }
+
+    // 2) Wander near nest
     this.wanderTimer -= dt;
     if (!this.wanderTarget || this.wanderTimer <= 0 ||
         dist(this, this.wanderTarget) < 15) {
@@ -2133,14 +2159,27 @@ class Game {
     this.raidTimer = rand(90000, 180000);
   }
 
-  // Used by friend defense AI and Egg.takeDamage to wake nearby idle ants.
+  // Used by friend defense AI / Egg.takeDamage / friend death to wake nearby ants.
   alertNearbyFriends(x, y, radius, attacker) {
+    // If no specific attacker given, pick the nearest enemy near the alert point.
+    let targetEnemy = (attacker && !attacker.dead) ? attacker : null;
+    if (!targetEnemy) {
+      let best = null, bestD = radius * 1.4;
+      for (const e of this.enemies) {
+        if (e.dead) continue;
+        const d = Math.hypot(e.x - x, e.y - y);
+        if (d < bestD) { best = e; bestD = d; }
+      }
+      targetEnemy = best;
+    }
     for (const f of this.friends) {
       if (f.dead || f.state === 'carrying') continue;
       if (Math.hypot(f.x - x, f.y - y) > radius) continue;
-      f.state = 'attacking';
-      f.target = attacker || f.target;
-      f.callTimer = 8000;
+      if (targetEnemy) {
+        f.state = 'attacking';
+        f.target = targetEnemy;
+        f.callTimer = 8000;
+      }
     }
   }
 
@@ -2688,6 +2727,8 @@ class Game {
         }
       }
       this.spawnEnemyDeath(ant.x, ant.y); // sad death effect
+      // Alert nearby friends (propagation): wake idle defenders to fight back.
+      this.alertNearbyFriends(ant.x, ant.y, 90, ant.target && !ant.target.dead ? ant.target : null);
     }
   }
 
