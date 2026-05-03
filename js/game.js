@@ -258,7 +258,7 @@ class Ant {
     this.hp = this.maxHp;
     this.attackPower = isPlayer ? PLAYER_ATTACK : FRIEND_ATTACK;
     this.speed = isPlayer ? PLAYER_SPEED : FRIEND_SPEED;
-    this.size = isPlayer ? 14 : 9;
+    this.size = isPlayer ? 14 : 18;
     this.state = isPlayer ? 'player' : 'idle';  // idle, follow, carrying, attacking
     this.target = null;
     this.carrying = null;
@@ -446,12 +446,23 @@ class Ant {
 
     if (this.state === 'follow') {
       const player = game.player;
-      const d = dist(this, player);
-      if (d > 50) {
-        this.moveToward(player, this.speed * 0.95, game);
-        moving = true;
-      } else if (d > 30) {
-        this.moveToward(player, this.speed * 0.5, game);
+      // Walk in a 2-column queue behind the player (line of marching ants).
+      // Slots are assigned by Game.update; col=slot%2, row=floor(slot/2).
+      const slot = this._followSlot >= 0 ? this._followSlot : 0;
+      const col  = slot % 2;
+      const row  = Math.floor(slot / 2);
+      const facing = player.angle;
+      const distBehind = 38 + row * 26;
+      const colSpread  = 16;
+      const fx = -Math.cos(facing) * distBehind;
+      const fy = -Math.sin(facing) * distBehind;
+      const px = -Math.sin(facing) * (col === 0 ? -colSpread : colSpread);
+      const py =  Math.cos(facing) * (col === 0 ? -colSpread : colSpread);
+      const target = { x: player.x + fx + px, y: player.y + fy + py };
+      const d = dist(this, target);
+      if (d > 8) {
+        const speedMul = d > 60 ? 0.95 : d > 20 ? 0.7 : 0.4;
+        this.moveToward(target, this.speed * speedMul, game);
         moving = true;
       }
 
@@ -475,8 +486,8 @@ class Ant {
         }
       }
 
-      // Follow times out — go back to idle
-      if (this.callTimer <= 0 && d < 80) {
+      // Follow times out — go back to idle when reasonably close to the player.
+      if (this.callTimer <= 0 && dist(this, player) < 100) {
         this.state = 'idle';
       }
 
@@ -542,7 +553,7 @@ class Ant {
   // colony doesn't visually pile up — they form ranks/lines/rings instead.
   // Walkability is respected so ants won't get pushed into walls.
   _applySeparation(game) {
-    const SEP_R = 14;
+    const SEP_R = 22;
     const SEP_F = 0.45;
     let pushX = 0, pushY = 0;
     let pairs = 0;
@@ -2683,8 +2694,12 @@ class AudioFx {
 class BGMPlayer {
   constructor(fx) {
     this.fx = fx;
-    this.enabled = false;
-    try { this.enabled = localStorage.getItem('ant_bgm') === 'true'; } catch (_) {}
+    // Default ON unless the user has explicitly turned it off.
+    this.enabled = true;
+    try {
+      const v = localStorage.getItem('ant_bgm');
+      if (v !== null) this.enabled = v === 'true';
+    } catch (_) {}
     this.intensity = 'calm';
     this.scheduler = null;
     this.nextNoteTime = 0;
@@ -3102,13 +3117,32 @@ class Game {
     // Boss multiplier: ×2.5 at 20 friends, up to ×4.5 at 1000.
     const bossMul = 2.5 + Math.min(2.0, totalAnts / 500);
 
-    // Pick a random edge to spawn the formation
-    const edge = Math.floor(Math.random() * 4);
+    // Pick the outermost unlocked zone (farthest from the nest) and spawn
+    // the formation INSIDE it. Spawning at the world edge stuck raiders in
+    // rock with the new spiral layout — they couldn't path back to the nest.
+    let outerZone = this.zones[0];
+    let bestDist = -1;
+    for (const z of this.zones) {
+      const cx = (z.x0 + z.x1) / 2, cy = (z.y0 + z.y1) / 2;
+      const d = Math.hypot(cx - NEST_X, cy - NEST_Y);
+      if (d > bestDist) { bestDist = d; outerZone = z; }
+    }
+    // Spawn position: along the edge of outerZone that faces AWAY from the nest.
+    const ocx = (outerZone.x0 + outerZone.x1) / 2;
+    const ocy = (outerZone.y0 + outerZone.y1) / 2;
+    const adx = ocx - NEST_X, ady = ocy - NEST_Y;
     let baseX, baseY, dx, dy;
-    if (edge === 0)      { baseX = rand(120, WORLD_WIDTH - 120); baseY = 60;             dx = 30; dy = 0;  }
-    else if (edge === 1) { baseX = 60;                            baseY = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); dx = 0; dy = 30; }
-    else                 { baseX = WORLD_WIDTH - 60;              baseY = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); dx = 0; dy = 30; }
-    if (edge >= 3) { baseX = rand(120, WORLD_WIDTH - 120); baseY = NEST_Y - NEST_RADIUS_BASE - 60; dx = 30; dy = 0; }
+    if (Math.abs(adx) > Math.abs(ady)) {
+      // Outer edge is east or west
+      baseX = adx > 0 ? outerZone.x1 - 50 : outerZone.x0 + 50;
+      baseY = ocy;
+      dx = 0; dy = 30;
+    } else {
+      // Outer edge is north or south
+      baseX = ocx;
+      baseY = ady > 0 ? outerZone.y1 - 50 : outerZone.y0 + 50;
+      dx = 30; dy = 0;
+    }
 
     this.raidEnemies = [];
 
@@ -4224,13 +4258,17 @@ class Game {
     const _stage = this.expansionStage;
     const maxFromNest = _stage === 0 ? 380 : Infinity;
 
+    // Bias zone pick toward zones with FEWER current foods so newly opened
+    // areas refill over time as the player carries food back to the nest.
+    const zonePicker = this._weightedZonePicker('food');
+
     // Find a candidate position weighted by terrain. Reject pond cells and
     // anything that's still rock (outside an unlocked zone).
     let x = 0, y = 0, terrainHere = 'grass', accepted = false;
     let bestX = 0, bestY = 0, bestTerrain = 'grass', haveBest = false;
     for (let attempt = 0; attempt < 18; attempt++) {
       // Sample inside one of the unlocked zones to guarantee a walkable tile.
-      const zone = pickRand(this.zones);
+      const zone = zonePicker();
       x = rand(zone.x0 + 30, zone.x1 - 30);
       y = rand(zone.y0 + 30, zone.y1 - 30);
       const dn = Math.hypot(x - NEST_X, y - NEST_Y);
@@ -4328,12 +4366,16 @@ class Game {
   spawnEnemy() {
     if (this.enemies.filter(e => !e.dead).length >= this.getMaxEnemies()) return;
 
+    // Bias zone pick toward zones with fewer current enemies so newly
+    // opened areas always have enemies appear over time.
+    const zonePicker = this._weightedZonePicker('enemy');
+
     let x = 0, y = 0, terrainHere = 'grass', accepted = false;
     let bestX = 0, bestY = 0, bestTerrain = 'grass', haveBest = false;
     for (let attempt = 0; attempt < 18; attempt++) {
       // Sample inside one of the unlocked zones (preferring zone edges for
       // that "appearing from the wilderness" feel).
-      const zone = pickRand(this.zones);
+      const zone = zonePicker();
       const edgeBias = Math.random() < 0.6;
       if (edgeBias) {
         const side = Math.floor(Math.random() * 4);
@@ -4424,6 +4466,39 @@ class Game {
     // Use the terrain's power scale so harsh-terrain ambushes still feel right
     const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
     this.enemies.push(new Enemy(x, y, type, cfg.scale || 1.0));
+  }
+
+  // Returns a closure that picks a zone weighted inversely by how populated
+  // the zone already is. `kind` selects whether food or enemy populations
+  // are counted. The closure caches per-zone counts at construction time.
+  _weightedZonePicker(kind) {
+    const counts = this.zones.map(z => {
+      let count = 0;
+      if (kind === 'food') {
+        for (const f of this.foods) {
+          if (f.deposited || f.beingCarried) continue;
+          if (f.x >= z.x0 && f.x <= z.x1 && f.y >= z.y0 && f.y <= z.y1) count++;
+        }
+      } else {
+        for (const e of this.enemies) {
+          if (e.dead) continue;
+          if (e.x >= z.x0 && e.x <= z.x1 && e.y >= z.y0 && e.y <= z.y1) count++;
+        }
+      }
+      return count;
+    });
+    // weight = 1 / (count + 1) — empty zones get strong preference, but
+    // populated zones still have nonzero chance.
+    const weights = counts.map(c => 1 / (c + 1));
+    const total = weights.reduce((s, w) => s + w, 0);
+    return () => {
+      let r = Math.random() * total;
+      for (let i = 0; i < this.zones.length; i++) {
+        r -= weights[i];
+        if (r <= 0) return this.zones[i];
+      }
+      return this.zones[this.zones.length - 1];
+    };
   }
 
   // True if (x, y) is on a tile a ground unit can stand on. Rock blocks both
@@ -4633,6 +4708,16 @@ class Game {
     const lodBottom = this.camera.y + this.viewH + 80;
     const offscreen = (e) =>
       e.x < lodLeft || e.x > lodRight || e.y < lodTop || e.y > lodBottom;
+
+    // Assign formation slots to following friends so they line up in a 2-column
+    // queue behind the player (real-ant marching feel).
+    let _slot = 0;
+    for (const f of this.friends) {
+      if (f.dead) continue;
+      if (f.state === 'follow') f._followSlot = _slot++;
+      else f._followSlot = -1;
+    }
+
     this.friends.forEach(f => {
       if (f.dead) return;
       // Skip: idle in nest off-screen — only need its position to be correct.
