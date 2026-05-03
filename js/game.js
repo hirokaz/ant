@@ -30,7 +30,8 @@ const ATTACK_COOLDOWN = 500;
 
 const FOOD_HATCH_TIME = 7000;
 
-const WIN_ANT_COUNT = 100;
+const WIN_ANT_COUNT = 1000;
+const EXPANSION_THRESHOLD = 100;  // every N allies a new biome unlocks
 
 const MAX_ENEMIES = 4;
 const MAX_FOODS = 6;
