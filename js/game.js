@@ -3,12 +3,16 @@
    ==================================================================== */
 
 // ---------- Constants ----------
-const WORLD_WIDTH = 1400;
-const WORLD_HEIGHT = 2000;
+// World dimensions are mutable to support runtime expansion (Issue #7).
+let WORLD_WIDTH = 1400;
+let WORLD_HEIGHT = 2000;
 
-const NEST_X = WORLD_WIDTH / 2;
-const NEST_Y = WORLD_HEIGHT - 220;
+// Nest position is fixed at the original world center; world growth happens
+// to the east (right). Coordinates remain stable for all existing entities.
+let NEST_X = WORLD_WIDTH / 2;
+let NEST_Y = WORLD_HEIGHT - 220;
 const NEST_RADIUS_BASE = 120;
+const WORLD_EXPAND_AMOUNT = 240;
 const EGG_ROOM_RADIUS = 70;
 
 const PLAYER_SPEED = 2.6;
@@ -1638,6 +1642,29 @@ class TerrainGrid {
     this.animPhase += dt * 0.001;
   }
 
+  // Grow the underlying grid to cover (newWorldW, newWorldH). Existing tiles preserved.
+  extend(newWorldW, newWorldH) {
+    const newCols = Math.ceil(newWorldW / this.tileSize);
+    const newRows = Math.ceil(newWorldH / this.tileSize);
+    // Pad existing rows to newCols
+    if (newCols > this.cols) {
+      for (let r = 0; r < this.rows; r++) {
+        for (let c = this.cols; c < newCols; c++) {
+          this.tiles[r][c] = 'grass';
+        }
+      }
+    }
+    // Add new rows
+    if (newRows > this.rows) {
+      for (let r = this.rows; r < newRows; r++) {
+        const row = new Array(newCols).fill('grass');
+        this.tiles.push(row);
+      }
+    }
+    this.cols = newCols;
+    this.rows = newRows;
+  }
+
   // Stable per-tile pseudo-random in [0,1) — for decoration placement.
   _rand01(c, r, salt = 0) {
     const v = (c * 1973 + r * 9277 + salt * 31337);
@@ -1874,6 +1901,9 @@ class Game {
     this.firstEnemySeen = false;
     this.firstBigFoodSeen = false;
     this.firstHealSeen = false;
+    this.expansionStage = 0;
+    this.shakeTimer = 0;
+    this.shakeMag = 0;
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -1918,7 +1948,59 @@ class Game {
     }
   }
 
+  // Field expansion — extends the world east and reveals new biomes.
+  expandWorld() {
+    const oldWidth = WORLD_WIDTH;
+    const newWidth = WORLD_WIDTH + WORLD_EXPAND_AMOUNT;
+    WORLD_WIDTH = newWidth;
+    this.expansionStage++;
+
+    // Extend terrain grid and regenerate the new strip with biome weights that
+    // get more varied/dangerous as we go deeper.
+    if (this.terrain) {
+      this.terrain.extend(newWidth, WORLD_HEIGHT);
+      // Stage 1-2: gentle (sand/leaves), Stage 3-5: mud/flowers/pond, Stage 6+: concrete
+      let weights;
+      if (this.expansionStage <= 2) {
+        weights = { sand: 3, leaves: 4, mud: 1, flower: 2, pond: 1, concrete: 1 };
+      } else if (this.expansionStage <= 5) {
+        weights = { sand: 2, leaves: 2, mud: 4, flower: 3, pond: 2, concrete: 1 };
+      } else {
+        weights = { sand: 1, leaves: 2, mud: 3, flower: 2, pond: 2, concrete: 4 };
+      }
+      this.terrain.regenerate({
+        x0: oldWidth - 40, y0: 40,
+        x1: newWidth - 40,
+        y1: NEST_Y - NEST_RADIUS_BASE - 40
+      }, { weights });
+    }
+
+    // Add grass tufts in the new strip
+    for (let i = 0; i < 12; i++) {
+      const x = rand(oldWidth + 20, newWidth - 40);
+      const y = rand(40, NEST_Y - NEST_RADIUS_BASE - 40);
+      this.grassTufts.push(new GrassTuft(x, y, rand(0.7, 1.2)));
+    }
+
+    // Visual feedback
+    this.shakeTimer = 600;
+    this.shakeMag = 6;
+    this.showMessage(`🌍 ステージ ${this.expansionStage} 解放！ 新しい地形が現れた！`, 'success', 3000);
+    // Sparkle particles along the new edge
+    for (let i = 0; i < 24; i++) {
+      const x = rand(oldWidth - 10, newWidth);
+      const y = rand(40, NEST_Y - NEST_RADIUS_BASE - 40);
+      this.particles.push(new Particle(x, y, rand(-0.5, 0.5), rand(-1.5, -0.5), rand(800, 1400), '#ffe680', rand(2, 3)));
+    }
+  }
+
   startGame() {
+    // Reset world dimensions in case of replay after expansion
+    WORLD_WIDTH = 1400;
+    WORLD_HEIGHT = 2000;
+    NEST_X = WORLD_WIDTH / 2;
+    NEST_Y = WORLD_HEIGHT - 220;
+
     this.player = new Ant(NEST_X, NEST_Y - 60, true);
     this.friends = [];
     this.foods = [];
@@ -1931,6 +2013,9 @@ class Game {
     this.foodSpawnTimer = 1000;
     this.enemySpawnTimer = 8000;
     this.healSpawnTimer = 18000;
+    this.expansionStage = 0;
+    this.shakeTimer = 0;
+    this.shakeMag = 0;
     // Generate terrain (initial outdoor area only — north of nest)
     this.terrain = new TerrainGrid(WORLD_WIDTH, WORLD_HEIGHT);
     this.terrain.regenerate({
@@ -1938,6 +2023,8 @@ class Game {
       x1: WORLD_WIDTH - 40,
       y1: NEST_Y - NEST_RADIUS_BASE - 40
     });
+    // Regenerate grass for the (reset) initial world
+    this.generateGrass();
     // Initial food
     this.spawnFood();
     this.spawnFood();
@@ -2231,7 +2318,9 @@ class Game {
     };
 
     // Find a candidate position weighted by terrain. Reject pond cells.
+    // Keep best-seen candidate so we always place something when possible.
     let x = 0, y = 0, terrainHere = 'grass', accepted = false;
+    let bestX = 0, bestY = 0, bestTerrain = 'grass', haveBest = false;
     for (let attempt = 0; attempt < 14; attempt++) {
       x = rand(60, WORLD_WIDTH - 60);
       y = rand(60, NEST_Y - NEST_RADIUS_BASE - 60);
@@ -2239,11 +2328,14 @@ class Game {
       terrainHere = this.terrain ? this.terrain.getAt(x, y) : 'grass';
       const w = FOOD_TERRAIN_WEIGHT[terrainHere] ?? 1.0;
       if (w <= 0) continue;
-      // accept-reject: probability of acceptance = min(1, w)
+      if (!haveBest) { bestX = x; bestY = y; bestTerrain = terrainHere; haveBest = true; }
+      // accept-reject: higher weight = more likely to accept (vs. retrying)
       if (Math.random() < Math.min(1, w / 2.5)) { accepted = true; break; }
-      accepted = true; break; // fallback after first valid pick
     }
-    if (!accepted) return;
+    if (!accepted) {
+      if (!haveBest) return;
+      x = bestX; y = bestY; terrainHere = bestTerrain;
+    }
 
     // Progressive variety based on colony size (existing curve, slightly extended for 1000 cap)
     const totalAnts = 1 + this.friends.filter(f => !f.dead).length;
@@ -2305,6 +2397,7 @@ class Game {
     };
 
     let x = 0, y = 0, terrainHere = 'grass', accepted = false;
+    let bestX = 0, bestY = 0, bestTerrain = 'grass', haveBest = false;
     for (let attempt = 0; attempt < 16; attempt++) {
       // Spawn near edges
       const edge = Math.floor(Math.random() * 4);
@@ -2317,12 +2410,14 @@ class Game {
       terrainHere = this.terrain ? this.terrain.getAt(x, y) : 'grass';
       const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
       if (cfg.weight <= 0) continue;
+      if (!haveBest) { bestX = x; bestY = y; bestTerrain = terrainHere; haveBest = true; }
       // weighted accept: relative to max weight (1.5)
       if (Math.random() < cfg.weight / 1.5) { accepted = true; break; }
-      // fallback after first valid candidate
-      accepted = true; break;
     }
-    if (!accepted) return;
+    if (!accepted) {
+      if (!haveBest) return;
+      x = bestX; y = bestY; terrainHere = bestTerrain;
+    }
 
     const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
     const totalAnts = 1 + this.friends.filter(f => !f.dead).length;
@@ -2604,16 +2699,29 @@ class Game {
 
     // Update HUD
     const total = 1 + this.friends.length;
-    document.getElementById('antCount').textContent = `🐜 ${total} / ${WIN_ANT_COUNT}`;
+    const stageLabel = this.expansionStage > 0 ? ` 🌍${this.expansionStage}` : '';
+    document.getElementById('antCount').textContent = `🐜 ${total} / ${WIN_ANT_COUNT}${stageLabel}`;
     const hpFill = document.getElementById('hpFill');
     const hpRatio = this.player.hp / this.player.maxHp;
     hpFill.style.width = (hpRatio * 100) + '%';
     hpFill.className = hpRatio > 0.6 ? 'high' : hpRatio > 0.3 ? 'medium' : '';
 
+    // Field expansion check (every EXPANSION_THRESHOLD friends)
+    const expectedStage = Math.min(9, Math.floor(total / EXPANSION_THRESHOLD));
+    if (expectedStage > this.expansionStage && total < WIN_ANT_COUNT) {
+      this.expandWorld();
+    }
+
     // Win check
     if (total >= WIN_ANT_COUNT) {
       this.gameState = 'won';
       document.getElementById('winScreen').classList.remove('hidden');
+    }
+
+    // Decay shake
+    if (this.shakeTimer > 0) {
+      this.shakeTimer -= dt;
+      if (this.shakeTimer <= 0) this.shakeMag = 0;
     }
 
     // Tutorial-ish hint: first food
@@ -2630,8 +2738,14 @@ class Game {
   // ---------- Render ----------
   render() {
     const ctx = this.ctx;
+    let shakeX = 0, shakeY = 0;
+    if (this.shakeTimer > 0 && this.shakeMag > 0) {
+      const t = this.shakeTimer / 600;
+      shakeX = (Math.random() - 0.5) * this.shakeMag * t * 2;
+      shakeY = (Math.random() - 0.5) * this.shakeMag * t * 2;
+    }
     ctx.save();
-    ctx.translate(-this.camera.x, -this.camera.y);
+    ctx.translate(-this.camera.x + shakeX, -this.camera.y + shakeY);
 
     this.drawBackground(ctx);
     this.drawNest(ctx);
