@@ -765,18 +765,19 @@ const ENEMY_DEFS = {
 };
 
 class Enemy {
-  constructor(x, y, type = 'spider') {
+  constructor(x, y, type = 'spider', powerScale = 1) {
     this.x = x;
     this.y = y;
     this.startX = x;
     this.startY = y;
     this.type = type;
     const def = ENEMY_DEFS[type] || ENEMY_DEFS.spider;
-    this.maxHp = def.maxHp;
+    this.powerScale = powerScale;
+    this.maxHp = Math.round(def.maxHp * powerScale);
     this.hp = this.maxHp;
-    this.attackPower = def.attackPower;
+    this.attackPower = Math.round(def.attackPower * powerScale);
     this.speed = def.speed;
-    this.size = def.size;
+    this.size = Math.round(def.size * (1 + (powerScale - 1) * 0.4));
     this.detectRange = def.detectRange;
     this.attackRange = def.attackRange;
     this.attackCooldownMax = def.attackCooldownMax;
@@ -1088,7 +1089,7 @@ class Enemy {
     if (this.hp <= 0) {
       this.hp = 0;
       this.dead = true;
-      game.spawnEnemyDeath(this.x, this.y);
+      game.spawnEnemyDeath(this.x, this.y, this.powerScale > 1.05 ? 1.5 : 1);
     } else if (attacker) {
       this.target = attacker;
     }
@@ -1096,6 +1097,19 @@ class Enemy {
 
   draw(ctx) {
     if (this.dead) return;
+
+    // Empowered aura ring (drawn under body in world space)
+    if (this.powerScale && this.powerScale > 1.05) {
+      ctx.save();
+      const pulse = 0.6 + 0.4 * Math.sin((this.actionPhase || 0) * 0.005);
+      ctx.strokeStyle = `rgba(255, 50, 50, ${0.35 * pulse})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y + 3, this.size + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle + Math.PI / 2);
@@ -2270,24 +2284,52 @@ class Game {
     this.foods.push(new Food(x, y, type));
   }
 
+  getMaxEnemies() {
+    const totalAnts = 1 + this.friends.filter(f => !f.dead).length;
+    // Slowly grow cap as colony grows: 4 → 12 over 1000 ants.
+    return Math.min(12, MAX_ENEMIES + Math.floor(totalAnts / 125));
+  }
+
   spawnEnemy() {
-    if (this.enemies.filter(e => !e.dead).length >= MAX_ENEMIES) return;
-    let x, y, attempts = 0;
-    do {
+    if (this.enemies.filter(e => !e.dead).length >= this.getMaxEnemies()) return;
+
+    // Per-terrain spawn weight & type bias & power scale
+    const ENEMY_TERRAIN = {
+      grass:    { weight: 1.0, bias: null,     scale: 1.0 },
+      pond:     { weight: 0,   bias: null,     scale: 1.0 },
+      sand:     { weight: 0.8, bias: 'spider', scale: 1.0 },
+      mud:      { weight: 1.4, bias: 'beetle', scale: 1.1 },
+      flower:   { weight: 0.6, bias: 'wasp',   scale: 1.0 },
+      leaves:   { weight: 1.2, bias: 'spider', scale: 1.0 },
+      concrete: { weight: 1.5, bias: 'beetle', scale: 1.2 }
+    };
+
+    let x = 0, y = 0, terrainHere = 'grass', accepted = false;
+    for (let attempt = 0; attempt < 16; attempt++) {
       // Spawn near edges
       const edge = Math.floor(Math.random() * 4);
       if (edge === 0) { x = rand(60, WORLD_WIDTH - 60); y = rand(40, 100); }
       else if (edge === 1) { x = rand(60, WORLD_WIDTH - 60); y = rand(NEST_Y - NEST_RADIUS_BASE - 200, NEST_Y - NEST_RADIUS_BASE - 80); }
       else if (edge === 2) { x = rand(40, 120); y = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); }
       else { x = rand(WORLD_WIDTH - 120, WORLD_WIDTH - 40); y = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); }
-      attempts++;
-    } while ((Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 100 ||
-              dist({ x, y }, this.player) < 200) && attempts < 10);
+      if (Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 100) continue;
+      if (this.player && dist({ x, y }, this.player) < 200) continue;
+      terrainHere = this.terrain ? this.terrain.getAt(x, y) : 'grass';
+      const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
+      if (cfg.weight <= 0) continue;
+      // weighted accept: relative to max weight (1.5)
+      if (Math.random() < cfg.weight / 1.5) { accepted = true; break; }
+      // fallback after first valid candidate
+      accepted = true; break;
+    }
+    if (!accepted) return;
 
-    // Progressive enemy variety
+    const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
     const totalAnts = 1 + this.friends.filter(f => !f.dead).length;
-    let type;
+
+    // Progressive variety unlocking
     const r = Math.random();
+    let type;
     if (totalAnts < 6) {
       type = 'spider';
     } else if (totalAnts < 15) {
@@ -2297,7 +2339,13 @@ class Game {
     } else {
       type = r < 0.35 ? 'spider' : r < 0.65 ? 'wasp' : 'beetle';
     }
-    this.enemies.push(new Enemy(x, y, type));
+
+    // Apply terrain bias: 50% chance to swap to biased type if unlocked
+    if (cfg.bias && totalAnts >= 6 && Math.random() < 0.5) {
+      type = cfg.bias;
+    }
+
+    this.enemies.push(new Enemy(x, y, type, cfg.scale));
   }
 
   spawnHealItem() {
@@ -2319,10 +2367,11 @@ class Game {
       this.particles.push(new Particle(x, y, Math.cos(a) * s, Math.sin(a) * s, rand(300, 500), '#ffaa44', rand(2, 3.5)));
     }
   }
-  spawnEnemyDeath(x, y) {
-    for (let i = 0; i < 14; i++) {
+  spawnEnemyDeath(x, y, intensity = 1) {
+    const count = Math.floor(14 * intensity);
+    for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
-      const s = rand(2, 6);
+      const s = rand(2, 6) * (intensity > 1 ? 1.2 : 1);
       this.particles.push(new Particle(x, y, Math.cos(a) * s, Math.sin(a) * s, rand(500, 900), '#7a307a', rand(2, 4)));
     }
   }
