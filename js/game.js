@@ -2210,19 +2210,32 @@ class Game {
   // ---------- Spawning ----------
   spawnFood() {
     if (this.foods.filter(f => !f.deposited).length >= MAX_FOODS) return;
-    let x, y, attempts = 0;
-    do {
+
+    // Per-terrain spawn weight & sampling. Higher = more likely to keep this candidate.
+    const FOOD_TERRAIN_WEIGHT = {
+      grass: 1.0, pond: 0, sand: 0.6, mud: 0.4, flower: 2.5, leaves: 1.2, concrete: 0.5
+    };
+
+    // Find a candidate position weighted by terrain. Reject pond cells.
+    let x = 0, y = 0, terrainHere = 'grass', accepted = false;
+    for (let attempt = 0; attempt < 14; attempt++) {
       x = rand(60, WORLD_WIDTH - 60);
       y = rand(60, NEST_Y - NEST_RADIUS_BASE - 60);
-      attempts++;
-    } while ((Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 80) && attempts < 10);
+      if (Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 80) continue;
+      terrainHere = this.terrain ? this.terrain.getAt(x, y) : 'grass';
+      const w = FOOD_TERRAIN_WEIGHT[terrainHere] ?? 1.0;
+      if (w <= 0) continue;
+      // accept-reject: probability of acceptance = min(1, w)
+      if (Math.random() < Math.min(1, w / 2.5)) { accepted = true; break; }
+      accepted = true; break; // fallback after first valid pick
+    }
+    if (!accepted) return;
 
-    // Progressive variety based on colony size
+    // Progressive variety based on colony size (existing curve, slightly extended for 1000 cap)
     const totalAnts = 1 + this.friends.filter(f => !f.dead).length;
     let type;
     const r = Math.random();
     if (totalAnts < 4) {
-      // Almost only small at the start
       type = r < 0.85 ? 'small' : 'medium';
     } else if (totalAnts < 10) {
       type = r < 0.55 ? 'small' : r < 0.90 ? 'medium' : 'large';
@@ -2232,6 +2245,26 @@ class Game {
       type = r < 0.25 ? 'small' : r < 0.50 ? 'medium' : r < 0.75 ? 'large' : r < 0.93 ? 'huge' : 'giant';
     } else {
       type = r < 0.18 ? 'small' : r < 0.38 ? 'medium' : r < 0.62 ? 'large' : r < 0.85 ? 'huge' : 'giant';
+    }
+
+    // Terrain bias: shift type distribution
+    if (terrainHere === 'sand') {
+      // skew small/medium
+      if (type === 'large' || type === 'huge' || type === 'giant') {
+        if (Math.random() < 0.5) type = 'medium';
+      }
+    } else if (terrainHere === 'mud') {
+      // mostly small
+      if (Math.random() < 0.5) type = 'small';
+    } else if (terrainHere === 'flower') {
+      // boost to medium/large
+      if (type === 'small' && Math.random() < 0.6) type = 'medium';
+      else if (type === 'medium' && Math.random() < 0.3) type = 'large';
+    } else if (terrainHere === 'leaves') {
+      if (type === 'small' && Math.random() < 0.4) type = 'medium';
+    } else if (terrainHere === 'concrete') {
+      // human leftovers — occasional huge/giant
+      if (totalAnts >= 10 && Math.random() < 0.25) type = Math.random() < 0.5 ? 'huge' : 'giant';
     }
 
     this.foods.push(new Food(x, y, type));
