@@ -129,7 +129,7 @@ const NEST_LEVELS = [
 // Cosmetic ant skins for the player. Unlocked via persistent stats so a
 // player who has reached a milestone keeps the skin even after starting over.
 const SKIN_DEFS = [
-  { id: 'default', label: 'デフォルト', color: '#3a1f0a', highlight: '#6a3a18', glow: false,
+  { id: 'default', label: 'デフォルト', color: '#161616', highlight: '#3a3a3a', glow: false,
     unlock: () => true,
     requirement: '初期から使用可' },
   { id: 'red',     label: '赤アリ',     color: '#8b1a1a', highlight: '#d04646', glow: false,
@@ -285,10 +285,10 @@ class Ant {
     this.dead = false;
     this.wanderTarget = null;
     this.wanderTimer = 0;
-    // Friend color shifted to a vivid rust so they stand out against mud /
-    // leaves / dark terrain (the old #5a3416 was almost identical to mud).
-    this.color = isPlayer ? '#3a1f0a' : '#a14418';
-    this.bodyHighlight = isPlayer ? '#6a3a18' : '#e07a30';
+    // Realistic blackened ant body. Player gets a slightly grayer cast plus
+    // the gold crown to stand out from friends.
+    this.color = isPlayer ? '#161616' : '#0c0a08';
+    this.bodyHighlight = isPlayer ? '#3a3a3a' : '#3a2a18';
     this.callTimer = 0;  // for follow timeout
     this.helpTarget = null; // food they're going to help carry
   }
@@ -463,18 +463,17 @@ class Ant {
 
     if (this.state === 'follow') {
       const player = game.player;
-      // Walk in a 2-column queue behind the player (line of marching ants).
-      // Slots are assigned by Game.update; col=slot%2, row=floor(slot/2).
+      // Walk in a SINGLE-FILE queue directly behind the player (real ant
+      // marching column). Slot is assigned by Game.update.
       const slot = this._followSlot >= 0 ? this._followSlot : 0;
-      const col  = slot % 2;
-      const row  = Math.floor(slot / 2);
       const facing = player.angle;
-      const distBehind = 38 + row * 26;
-      const colSpread  = 16;
+      const distBehind = 32 + slot * 22;
       const fx = -Math.cos(facing) * distBehind;
       const fy = -Math.sin(facing) * distBehind;
-      const px = -Math.sin(facing) * (col === 0 ? -colSpread : colSpread);
-      const py =  Math.cos(facing) * (col === 0 ? -colSpread : colSpread);
+      // Tiny perpendicular wobble so the line breathes / curves naturally.
+      const wobble = Math.sin((this.legPhase || 0) * 1.2 + slot * 0.6) * 4;
+      const px = -Math.sin(facing) * wobble;
+      const py =  Math.cos(facing) * wobble;
       const target = { x: player.x + fx + px, y: player.y + fy + py };
       const d = dist(this, target);
       if (d > 8) {
@@ -533,19 +532,41 @@ class Ant {
       return;
     }
 
-    // 2) Wander near nest
+    // 2) Wander — and occasionally forage outside the nest. Foraging idle
+    // ants pick up unattended small food along the way (see attemptPickup).
     this.wanderTimer -= dt;
     if (!this.wanderTarget || this.wanderTimer <= 0 ||
         dist(this, this.wanderTarget) < 15) {
-      const a = Math.random() * Math.PI * 2;
-      const r = Math.random() * (NEST_RADIUS_BASE * 0.8);
-      this.wanderTarget = {
-        x: NEST_X + Math.cos(a) * r,
-        y: NEST_Y + Math.sin(a) * r
-      };
-      this.wanderTimer = rand(2000, 4500);
+      // 35% chance to head outside the nest as a forager. If there's any
+      // unattended small food nearby, head straight for the closest one.
+      const forage = Math.random() < 0.35;
+      let target = null;
+      if (forage) {
+        let best = null, bd = 800;
+        for (const f of game.foods) {
+          if (f.deposited || f.beingCarried) continue;
+          if (f.required > 1) continue;        // scouts only grab small food
+          const d = dist(this, f);
+          if (d < bd) { bd = d; best = f; }
+        }
+        if (best) {
+          target = { x: best.x, y: best.y };
+        } else {
+          // Wander outside the nest to scout for more food.
+          const a = Math.random() * Math.PI * 2;
+          const r = rand(NEST_RADIUS_BASE + 80, NEST_RADIUS_BASE + 280);
+          target = { x: NEST_X + Math.cos(a) * r, y: NEST_Y + Math.sin(a) * r };
+        }
+      } else {
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.random() * (NEST_RADIUS_BASE * 0.8);
+        target = { x: NEST_X + Math.cos(a) * r, y: NEST_Y + Math.sin(a) * r };
+      }
+      this.wanderTarget = target;
+      this.wanderTimer = rand(2200, 4500);
     }
-    this.moveToward(this.wanderTarget, this.speed * 0.35, game);
+    const wspeed = inNest(this.x, this.y) ? this.speed * 0.35 : this.speed * 0.6;
+    this.moveToward(this.wanderTarget, wspeed, game);
     moving = true;
     this._moving = moving;
   }
@@ -676,9 +697,9 @@ class Ant {
     const bob = moving ? Math.sin(this.legPhase * 2) * 0.8 : 0;
     const outline = 'rgba(0,0,0,0.55)';
 
-    // Six chunky legs (3 left, 3 right). Drawn under body.
+    // Slim 6 legs (3 left, 3 right). Drawn under body.
     ctx.strokeStyle = this.color;
-    ctx.lineWidth = 2.0 * s;
+    ctx.lineWidth = 1.6 * s;
     ctx.lineCap = 'round';
     const legSpec = [
       { y: -2.0 * s, swing: swingA },
@@ -687,46 +708,54 @@ class Ant {
     ];
     for (const L of legSpec) {
       ctx.beginPath();
-      ctx.moveTo(-2.5 * s, L.y);
-      ctx.quadraticCurveTo(-6 * s, L.y + L.swing, -8 * s, L.y + 1 + L.swing * 1.6);
+      ctx.moveTo(-1.8 * s, L.y);
+      ctx.quadraticCurveTo(-5 * s, L.y + L.swing, -7 * s, L.y + 1 + L.swing * 1.6);
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(2.5 * s, L.y);
-      ctx.quadraticCurveTo(6 * s, L.y - L.swing, 8 * s, L.y + 1 - L.swing * 1.6);
+      ctx.moveTo(1.8 * s, L.y);
+      ctx.quadraticCurveTo(5 * s, L.y - L.swing, 7 * s, L.y + 1 - L.swing * 1.6);
       ctx.stroke();
     }
 
-    // Body (single round capsule, smaller than head)
+    // Slim 3-segment body: abdomen (rear) + thorax (waist) + head.
+    // Rear abdomen
     ctx.fillStyle = this.color;
     ctx.strokeStyle = outline;
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.ellipse(0, 4.5 * s + bob, 5.4 * s, 5.6 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 5.5 * s + bob, 3.3 * s, 5.0 * s, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    // Body highlight
+    // Subtle body highlight
     ctx.fillStyle = this.bodyHighlight;
     ctx.beginPath();
-    ctx.ellipse(-1.4 * s, 3.4 * s + bob, 1.8 * s, 2.6 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(-0.9 * s, 4.5 * s + bob, 0.9 * s, 1.8 * s, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Head (big chibi)
+    // Thin thorax (waist)
     ctx.fillStyle = this.color;
     ctx.beginPath();
-    ctx.arc(0, -4.5 * s + bob * 0.6, 5.6 * s, 0, Math.PI * 2);
+    ctx.ellipse(0, 0.5 * s + bob * 0.7, 1.9 * s, 2.0 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Head (slimmer than before)
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.arc(0, -4.0 * s + bob * 0.6, 4.4 * s, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = outline;
+    ctx.lineWidth = 1.2;
     ctx.stroke();
     // Head highlight (sheen on left)
     ctx.fillStyle = this.bodyHighlight;
     ctx.beginPath();
-    ctx.ellipse(-2 * s, -5.6 * s + bob * 0.6, 1.6 * s, 1.9 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(-1.6 * s, -5.0 * s + bob * 0.6, 1.2 * s, 1.5 * s, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Big round eyes (whites + pupils + sparkle)
-    const eyeOff = 2.0 * s;
-    const eyeY = -5.0 * s + bob * 0.6;
-    const eyeR = 1.7 * s;
+    // Round eyes (whites + pupils + sparkle)
+    const eyeOff = 1.7 * s;
+    const eyeY = -4.6 * s + bob * 0.6;
+    const eyeR = 1.4 * s;
     ctx.fillStyle = '#fff';
     ctx.strokeStyle = outline;
     ctx.lineWidth = 1.0;
@@ -3159,6 +3188,14 @@ class Game {
       zoneCy: (zone.y0 + zone.y1) / 2,
       timer: 5000
     };
+
+    // 10 seconds after the area opens, the new area's denizens raid the nest.
+    // Override the natural raidTimer with a short fuse for this dramatic beat.
+    if (this.friends.filter(f => !f.dead).length >= 20) {
+      this.raidTimer = 10000;
+      this.raidWarningGiven = false;
+      this.raidImminent = false;
+    }
   }
 
   startCinematic(zone) {
@@ -4379,8 +4416,11 @@ class Game {
         this.showMessage('餌をゲット！', 'success', 1100);
         return true;
       }
+      // Followers OR idle foragers (idle ants outside the nest) can pick up.
       const nearbyFriend = this.friends.find(f =>
-        !f.dead && f.state === 'follow' && dist(f, food) < 36
+        !f.dead && dist(f, food) < 38 &&
+        (f.state === 'follow' ||
+         (f.state === 'idle' && !inNest(f.x, f.y)))
       );
       if (nearbyFriend) {
         food.carriers = [nearbyFriend];
@@ -4936,10 +4976,16 @@ class Game {
       else f._followSlot = -1;
     }
 
-    this.friends.forEach(f => {
+    // Throttle (not skip) updates for idle ants in the nest while off-screen.
+    // We still need them to occasionally cycle wander logic so they can become
+    // foragers and pick up food in newly opened areas while the player is
+    // exploring elsewhere.
+    this._idleTickPhase = ((this._idleTickPhase || 0) + 1) % 4;
+    this.friends.forEach((f, idx) => {
       if (f.dead) return;
-      // Skip: idle in nest off-screen — only need its position to be correct.
-      if (f.state === 'idle' && inNest(f.x, f.y) && offscreen(f)) return;
+      if (f.state === 'idle' && inNest(f.x, f.y) && offscreen(f)) {
+        if ((idx + this._idleTickPhase) % 4 !== 0) return;  // ~15fps for these
+      }
       f.update(dt, this);
     });
     this.enemies.forEach(e => {
