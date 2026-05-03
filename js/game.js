@@ -605,6 +605,25 @@ class Food {
     ctx.ellipse(0, this.size * 0.7, this.size * 0.9, this.size * 0.3, 0, 0, Math.PI * 2);
     ctx.fill();
 
+    // Visibility halo — soft warm glow that makes food stand out against
+    // grass/leaves/etc. especially on small mobile screens. Stronger for
+    // smaller foods (which would otherwise blend in). Honey has its own glow.
+    if (!this.beingCarried && this.type !== 'honey') {
+      const auraScale = this.type === 'small'  ? 2.6
+                      : this.type === 'medium' ? 2.0
+                      : 1.6;
+      const auraR = this.size * auraScale;
+      const pulse = 0.6 + 0.4 * Math.sin(this.bobble * 1.4);
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, auraR);
+      grad.addColorStop(0, `rgba(255, 232, 140, ${0.55 * pulse})`);
+      grad.addColorStop(0.55, `rgba(255, 220, 120, ${0.18 * pulse})`);
+      grad.addColorStop(1, 'rgba(255, 220, 120, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, auraR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     // Bonus ring for harsh-terrain food (risk-reward indicator)
     if (this.eggBonus && this.eggBonus > 1.0 && this.type !== 'honey') {
       const pulse = 0.6 + 0.4 * Math.sin(this.bobble * 2);
@@ -2678,14 +2697,20 @@ class Game {
   }
 
   // ---------- Spawning ----------
-  // Initial foods placed at the start of a fresh game: 3 small (1-carrier)
-  // pieces planted around the nest within easy reach so the player can
-  // immediately make progress without scouring the field.
+  // Initial foods placed at the start of a fresh game: 5 small (1-carrier)
+  // pieces fanned across the north hemisphere of the nest at two distances,
+  // so the player always has plenty of easy targets visible on screen.
   spawnInitialFoods() {
-    const segment = Math.PI / 3;  // 60° each, fanned across the north hemisphere
-    for (let i = 0; i < 3; i++) {
-      const a = Math.PI + (i + 0.5) * segment + rand(-segment / 4, segment / 4);
-      const r = rand(NEST_RADIUS_BASE + 90, NEST_RADIUS_BASE + 200);
+    const placements = [
+      { angleFrac: 0.10, r: NEST_RADIUS_BASE + 90  },
+      { angleFrac: 0.30, r: NEST_RADIUS_BASE + 170 },
+      { angleFrac: 0.50, r: NEST_RADIUS_BASE + 100 },
+      { angleFrac: 0.70, r: NEST_RADIUS_BASE + 170 },
+      { angleFrac: 0.90, r: NEST_RADIUS_BASE + 90  }
+    ];
+    for (const p of placements) {
+      const a = Math.PI + p.angleFrac * Math.PI + rand(-0.08, 0.08);
+      const r = p.r + rand(-15, 15);
       const x = clamp(NEST_X + Math.cos(a) * r, 60, WORLD_WIDTH - 60);
       const y = clamp(NEST_Y + Math.sin(a) * r, 60, NEST_Y - NEST_RADIUS_BASE - 60);
       const f = new Food(x, y, 'small');
