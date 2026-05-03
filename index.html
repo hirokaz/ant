@@ -25,6 +25,7 @@
         </div>
       </div>
       <button id="sfxToggle" title="効果音 ON/OFF">🔇</button>
+      <button id="pauseBtn" title="ポーズ">⏸</button>
     </div>
     <div id="progressContainer">
       <div id="progressBar"><div id="progressFill"></div><div id="progressMarkers"></div></div>
@@ -85,6 +86,24 @@
     <div class="overlay-content">
       <h2>💤 巣で休んでいます…</h2>
       <p id="respawnText">3</p>
+    </div>
+  </div>
+
+  <!-- Pause Screen -->
+  <div id="pauseScreen" class="overlay hidden">
+    <div class="overlay-content">
+      <h2>⏸ ポーズ中</h2>
+      <button id="resumeBtn" class="big-btn">🎮 続ける</button>
+      <div class="settings-block">
+        <h3>⚙️ 設定</h3>
+        <div class="setting-row"><span>🔊 効果音</span><button id="settingSfx" class="toggle-btn">OFF</button></div>
+        <div class="setting-row"><span>📳 振動</span><button id="settingVibrate" class="toggle-btn">ON</button></div>
+      </div>
+      <div class="pause-actions">
+        <button id="restartRunBtn" class="small-btn">🔄 最初からやり直す</button>
+        <button id="exitBtn" class="small-btn">🚪 タイトルへ</button>
+        <button id="resetAllBtn" class="small-btn danger">💀 全データ消去</button>
+      </div>
     </div>
   </div>
 

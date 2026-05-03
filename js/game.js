@@ -47,6 +47,56 @@ const MAX_EXPANSION_STAGE = 19;        // 1000/50 - 1 (final stage = win)
 const WORLD_EXPAND_AMOUNT = 350;       // ≈25% of initial 1400 width
 // Order in which biome regions appear. After the 6th unlock the cycle repeats.
 const BIOME_SEQUENCE = ['mud', 'pond', 'flower', 'leaves', 'sand', 'concrete'];
+// Short-duration power-ups dropped occasionally by defeated enemies.
+const POWERUP_DEFS = {
+  dash:   { icon: '⚡',  label: '猛ダッシュ', durationMs: 8000,  glowColor: 'rgba(255, 220, 80, 0.55)',  auraColor: '255, 220, 80'  },
+  strong: { icon: '🗡',  label: '強化アゴ',   durationMs: 10000, glowColor: 'rgba(255, 100, 100, 0.55)', auraColor: '255, 100, 100' },
+  invuln: { icon: '✨',  label: '無敵',       durationMs: 5000,  glowColor: 'rgba(160, 240, 255, 0.55)', auraColor: '160, 240, 255' }
+};
+const POWERUP_TYPES = Object.keys(POWERUP_DEFS);
+
+class PowerUp {
+  constructor(x, y, type) {
+    this.x = x; this.y = y;
+    this.type = type;
+    this.size = 16;
+    this.bobble = Math.random() * Math.PI * 2;
+    this.lifetime = 20000;
+    this.collected = false;
+  }
+  update(dt) {
+    this.bobble += dt * 0.005;
+    this.lifetime -= dt;
+    if (this.lifetime <= 0) this.collected = true;
+  }
+  draw(ctx) {
+    if (this.collected) return;
+    const bob = Math.sin(this.bobble * 2) * 3;
+    const fade = Math.min(1, this.lifetime / 4000);
+    const def = POWERUP_DEFS[this.type] || POWERUP_DEFS.dash;
+    ctx.save();
+    ctx.translate(this.x, this.y + bob);
+    ctx.globalAlpha = fade;
+    const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, this.size * 1.8);
+    glow.addColorStop(0, def.glowColor);
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(0, 0, this.size * 1.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(20, 20, 20, 0.85)';
+    ctx.beginPath();
+    ctx.arc(0, 0, this.size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(def.icon, 0, 0);
+    ctx.restore();
+  }
+}
+
 // Nest base upgrade levels — gated on cumulative deposits across the run.
 // These compound with colony levels (which gate on friend count).
 const NEST_LEVELS = [
@@ -234,6 +284,13 @@ class Ant {
     this._terrainSpeedMul = 1;
     if (game.terrain && !inNest(this.x, this.y)) {
       const t = game.terrain.getAt(this.x, this.y);
+      // First-time terrain hints (player only).
+      if (this.isPlayer && game._hintOnce) {
+        if (t === 'mud')      game._hintOnce('terrain_mud',      '泥は歩きづらい+体力が減る');
+        else if (t === 'pond') game._hintOnce('terrain_pond',     '池は危険! 大幅に減速&HP減少');
+        else if (t === 'concrete') game._hintOnce('terrain_concrete','コンクリは強敵が多いが大型餌が落ちている');
+        else if (t === 'flower')  game._hintOnce('terrain_flower',  '花畑は餌が多くHPが微回復');
+      }
       const def = TERRAIN_DEFS[t];
       if (def) {
         this._terrainSpeedMul = def.speed;
@@ -302,9 +359,10 @@ class Ant {
       if (game.bonuses && game.bonuses.carrySpeedMul) speed *= game.bonuses.carrySpeedMul;
     }
 
-    // Apply terrain slowdown + event multipliers
+    // Apply terrain slowdown + event multipliers + power-up dash bonus.
     speed *= this._terrainSpeedMul || 1;
     speed *= game._eventPlayerSpeedMul || 1;
+    if (game.activePowerUp === 'dash') speed *= 1.5;
 
     if (input.moving) {
       const dx = input.moveX;
@@ -470,6 +528,11 @@ class Ant {
 
   takeDamage(dmg, game, attacker) {
     if (this.dead || this.invuln > 0) return;
+    // Invuln power-up shields the player completely.
+    if (this.isPlayer && game && game.activePowerUp === 'invuln') {
+      this.invuln = 200;  // tiny invuln to prevent retaliation spam
+      return;
+    }
     this.hp -= dmg;
     this.invuln = 250;
     game.spawnDamageNumber(this.x, this.y - 15, dmg, this.isPlayer ? '#ff6464' : '#ffaa64');
@@ -721,8 +784,29 @@ class Food {
       }
     });
     this.carriers = [];
-    // Spawn eggs (with risk-reward bonus from harsh terrain)
-    const eggsToSpawn = Math.max(1, Math.round(this.eggs * (this.eggBonus || 1)));
+    // Combo: chain deposits inside the 12s window for bonus eggs.
+    let comboBonusEggs = 0;
+    if (game.combo) {
+      if (game.combo.timerMs > 0) {
+        game.combo.count++;
+      } else {
+        game.combo.count = 1;
+      }
+      game.combo.timerMs = 12000;
+      // Bonus formula: stepwise reward.
+      const c = game.combo.count;
+      if (c >= 10)      comboBonusEggs = 8;
+      else if (c >= 5)  comboBonusEggs = 4;
+      else if (c >= 3)  comboBonusEggs = 2;
+      else if (c >= 2)  comboBonusEggs = 1;
+      // Banner shown via game state
+      if (c >= 2) {
+        game._comboBannerTimer = 1100;
+      }
+    }
+    // Spawn eggs (terrain bonus + combo bonus).
+    const baseEggs = Math.max(1, Math.round(this.eggs * (this.eggBonus || 1)));
+    const eggsToSpawn = baseEggs + comboBonusEggs;
     const hatchMul = (game.bonuses && game.bonuses.hatchTimeMul) || 1;
     for (let i = 0; i < eggsToSpawn; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -733,9 +817,11 @@ class Food {
       game.eggs.push(eg);
     }
     game.spawnDepositEffect(this.x, this.y);
-    const bonusTxt = (this.eggBonus && this.eggBonus > 1.0)
-      ? ` (✨ボーナス! +${eggsToSpawn - this.eggs})`
-      : '';
+    const terrainBonus = baseEggs - this.eggs;
+    const extraTxt = [];
+    if (terrainBonus > 0) extraTxt.push(`地形+${terrainBonus}`);
+    if (comboBonusEggs > 0) extraTxt.push(`🔥${game.combo.count}連+${comboBonusEggs}`);
+    const bonusTxt = extraTxt.length ? ` (${extraTxt.join(', ')})` : '';
     game.showMessage(`巣に運んだ！ 卵 +${eggsToSpawn}${bonusTxt}`, 'success');
     if (game.audio) game.audio.play('deposit');
     if (game._advanceTutorial) game._advanceTutorial('deposit');
@@ -1459,6 +1545,14 @@ class Enemy {
       this.dead = true;
       game.spawnEnemyDeath(this.x, this.y, this.powerScale > 1.05 ? 1.5 : 1);
       game.dropFoodOnEnemyDeath(this);
+      // Power-up drop chance.
+      let dropP = 0.03;
+      if (this.powerScale > 1.05) dropP = 0.12;
+      if (this.isBoss) dropP = 1.0;
+      if (Math.random() < dropP) {
+        const t = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+        game.powerUps.push(new PowerUp(this.x, this.y, t));
+      }
     } else if (attacker) {
       this.target = attacker;
     }
@@ -2497,6 +2591,10 @@ class Game {
     this.camera = { x: 0, y: 0, cx: 0, cy: 0, scale: 1 };
     this.cinematic = null;
     this.audio = new AudioFx();
+    // Vibration setting (default ON). Stored separately from SFX.
+    let vib = true;
+    try { const v = localStorage.getItem('ant_vibrate'); if (v !== null) vib = v === 'true'; } catch (_) {}
+    this.vibrationEnabled = vib;
     this.viewW = 0;
     this.viewH = 0;
     this.dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -2949,6 +3047,16 @@ class Game {
     this._eventFoodMul = 1.0;
     this._eventPlayerSpeedMul = 1.0;
     this._eventEnemySpeedMul = 1.0;
+    // Active power-up (one slot at a time; latest wins)
+    this.powerUps = [];
+    this.activePowerUp = null;
+    this.activePowerUpTimer = 0;
+    // Pheromone trail (visual only). Capped to keep render cheap.
+    this.trailPoints = [];
+    this._trailAcc = 0;
+    // Carry combo: chain depositing within COMBO_WINDOW ms grants bonus eggs.
+    this.combo = { count: 0, timerMs: 0 };
+    this._comboBannerTimer = 0;
     // Colony level + per-bonus tracking. Bonuses get re-applied on continue.
     this.colonyLevel = 0;
     this.nestLevel = 0;
@@ -3202,10 +3310,101 @@ class Game {
         this.audio.toggle();
         renderIcon();
         if (this.audio.enabled) this.audio.play('tap');
+        // Sync the in-pause toggle if present.
+        const sb = document.getElementById('settingSfx');
+        if (sb) { sb.classList.toggle('on', this.audio.enabled); sb.textContent = this.audio.enabled ? 'ON' : 'OFF'; }
       };
       sfxBtn.addEventListener('click', toggle);
       sfxBtn.addEventListener('touchstart', toggle, { passive: false });
     }
+
+    // Pause button.
+    const pauseBtn = document.getElementById('pauseBtn');
+    if (pauseBtn) {
+      const onPause = (e) => {
+        if (e) { e.preventDefault(); e.stopPropagation(); }
+        if (this.gameState !== 'playing') return;
+        this.pauseGame();
+      };
+      pauseBtn.addEventListener('click', onPause);
+      pauseBtn.addEventListener('touchstart', onPause, { passive: false });
+    }
+
+    // Pause-screen actions
+    const resumeBtn = document.getElementById('resumeBtn');
+    if (resumeBtn) resumeBtn.addEventListener('click', () => this.resumeGame());
+    const restartBtn = document.getElementById('restartRunBtn');
+    if (restartBtn) restartBtn.addEventListener('click', () => {
+      if (!confirm('現在の進行を破棄して最初からやり直しますか？')) return;
+      this.clearSave();
+      document.getElementById('pauseScreen').classList.add('hidden');
+      this.startGame();
+    });
+    const exitBtn = document.getElementById('exitBtn');
+    if (exitBtn) exitBtn.addEventListener('click', () => {
+      this.saveGame();
+      document.getElementById('pauseScreen').classList.add('hidden');
+      document.getElementById('startScreen').classList.remove('hidden');
+      // Refresh the start-screen panels (continue button, stats, skins).
+      this._renderStartPanels();
+      this.gameState = 'start';
+    });
+    const resetAllBtn = document.getElementById('resetAllBtn');
+    if (resetAllBtn) resetAllBtn.addEventListener('click', () => {
+      if (!confirm('全データ (セーブ・記録・スキン) を消去します。本当に？')) return;
+      try {
+        ['ant_save','ant_stats','ant_history','ant_skin_unlocked','ant_skin_active',
+         'ant_tutorial_done','ant_hints_seen','ant_sfx','ant_vibrate'].forEach(k => localStorage.removeItem(k));
+      } catch (_) {}
+      location.reload();
+    });
+    // Setting toggles (in pause screen) — sync with master state.
+    const settingSfx = document.getElementById('settingSfx');
+    if (settingSfx) {
+      settingSfx.addEventListener('click', () => {
+        this.audio.toggle();
+        settingSfx.classList.toggle('on', this.audio.enabled);
+        settingSfx.textContent = this.audio.enabled ? 'ON' : 'OFF';
+        if (sfxBtn) sfxBtn.textContent = this.audio.enabled ? '🔊' : '🔇';
+        if (this.audio.enabled) this.audio.play('tap');
+      });
+    }
+    const settingVib = document.getElementById('settingVibrate');
+    if (settingVib) {
+      settingVib.addEventListener('click', () => {
+        this.vibrationEnabled = !this.vibrationEnabled;
+        try { localStorage.setItem('ant_vibrate', this.vibrationEnabled ? 'true' : 'false'); } catch (_) {}
+        settingVib.classList.toggle('on', this.vibrationEnabled);
+        settingVib.textContent = this.vibrationEnabled ? 'ON' : 'OFF';
+      });
+    }
+  }
+
+  pauseGame() {
+    if (this.gameState !== 'playing') return;
+    this.gameState = 'paused';
+    document.getElementById('pauseScreen').classList.remove('hidden');
+    // Sync settings UI to current state.
+    const sb = document.getElementById('settingSfx');
+    if (sb) { sb.classList.toggle('on', this.audio.enabled); sb.textContent = this.audio.enabled ? 'ON' : 'OFF'; }
+    const vb = document.getElementById('settingVibrate');
+    if (vb) { vb.classList.toggle('on', this.vibrationEnabled); vb.textContent = this.vibrationEnabled ? 'ON' : 'OFF'; }
+  }
+  resumeGame() {
+    if (this.gameState !== 'paused') return;
+    this.gameState = 'playing';
+    document.getElementById('pauseScreen').classList.add('hidden');
+  }
+
+  // Re-render the start-screen panels (used after returning from gameplay).
+  _renderStartPanels() {
+    this._renderStatsPanel();
+    this._renderSkinPicker();
+    // Continue button visibility
+    const cb = document.getElementById('continueBtn');
+    if (!cb) return;
+    if (this.loadSave()) cb.classList.remove('hidden');
+    else cb.classList.add('hidden');
   }
 
   setupUI() {
@@ -3319,6 +3518,16 @@ class Game {
       <div class="stat-row"><span>死亡回数</span><span>${s.deaths || 0}</span></div>
       <div class="stat-row"><span>🏆 自己ベスト</span><span>${fmt(s.bestClearMs)}</span></div>
     `;
+  }
+
+  // ---------- Hints (one-shot) ----------
+  _hintOnce(id, text) {
+    let seen;
+    try { seen = JSON.parse(localStorage.getItem('ant_hints_seen') || '[]'); } catch (_) { seen = []; }
+    if (seen.includes(id)) return;
+    seen.push(id);
+    try { localStorage.setItem('ant_hints_seen', JSON.stringify(seen)); } catch (_) {}
+    this.showMessage('💡 ' + text, '', 3500);
   }
 
   // ---------- Skins ----------
@@ -3535,7 +3744,11 @@ class Game {
 
     if (closest) {
       const wasAlive = !closest.dead;
-      closest.takeDamage(this.player.attackPower, this, this.player);
+      // Strong-mouth power-up doubles attack damage.
+      const dmg = this.activePowerUp === 'strong'
+        ? Math.round(this.player.attackPower * 2)
+        : this.player.attackPower;
+      closest.takeDamage(dmg, this, this.player);
       if (this.audio) this.audio.play('hit');
       if (wasAlive && closest.dead) {
         this._advanceTutorial('kill');
@@ -3800,6 +4013,7 @@ class Game {
       type = 'honey';
       // Announce the rare find
       this.showMessage('🍯 珍しい餌が現れた! でも危険…', 'success', 3000);
+      this._hintOnce('food_honey', 'ハチミツの壺は卵+20! でもハチが守っている');
       // Honey attracts wasps when pond is unlocked: spawn 1-2 nearby
       if (this.unlockedBiomes.has('pond')) {
         const guards = 1 + (Math.random() < 0.5 ? 1 : 0);
@@ -3892,6 +4106,8 @@ class Game {
     }
 
     this.enemies.push(new Enemy(x, y, type, cfg.scale));
+    if (type === 'beetle') this._hintOnce('enemy_beetle', 'カブトムシ: 突進攻撃あり! 横にステップで避けよう');
+    if (type === 'wasp')   this._hintOnce('enemy_wasp',   'ハチ: 速くて空を飛ぶ. 近づいてきた瞬間に攻撃');
   }
 
   // Carry-time ambush spawn: place an enemy at a random angle from (cx, cy),
@@ -4141,6 +4357,31 @@ class Game {
     this.foods.forEach(f => f.update(dt, this));
     this.eggs.forEach(eg => eg.update(dt));
     this.healItems.forEach(h => h.update(dt));
+    if (this.powerUps) this.powerUps.forEach(p => p.update(dt));
+
+    // Pheromone trail: sample player + a few moving friends every 200ms,
+    // and fade existing points. Capped at 200 points for performance.
+    this._trailAcc += dt;
+    if (this._trailAcc >= 200) {
+      this._trailAcc = 0;
+      const pushPt = (x, y, life = 3500) => {
+        if (this.trailPoints.length >= 200) this.trailPoints.shift();
+        this.trailPoints.push({ x, y, life, maxLife: life });
+      };
+      if (this.player && !this.player.dead && this.player._moving && !inNest(this.player.x, this.player.y)) {
+        pushPt(this.player.x, this.player.y, 4500);
+      }
+      // Sample only a few friends to avoid trail spam.
+      let sampled = 0;
+      for (const f of this.friends) {
+        if (sampled >= 5) break;
+        if (f.dead || !f._moving || inNest(f.x, f.y)) continue;
+        pushPt(f.x, f.y, 2500);
+        sampled++;
+      }
+    }
+    for (const p of this.trailPoints) p.life -= dt;
+    this.trailPoints = this.trailPoints.filter(p => p.life > 0);
     this.particles.forEach(p => p.update(dt));
     this.damageNumbers.forEach(d => d.update(dt));
 
@@ -4183,6 +4424,37 @@ class Game {
         this.showMessage(`💖 HP +${healed}!${friendsTxt}`, 'success', 1800);
       }
     });
+
+    // Power-up pickup + active timer.
+    if (this.powerUps) {
+      this.powerUps.forEach(pu => {
+        if (pu.collected) return;
+        if (!this.player.dead && dist(this.player, pu) < this.player.size + pu.size - 2) {
+          pu.collected = true;
+          this.activePowerUp = pu.type;
+          const def = POWERUP_DEFS[pu.type];
+          this.activePowerUpTimer = def.durationMs;
+          this.showMessage(`✨ ${def.icon} ${def.label} 発動!`, 'success', 1800);
+          if (this.audio) this.audio.play('heal');
+          // Sparkles
+          for (let i = 0; i < 14; i++) {
+            const a = Math.random() * Math.PI * 2;
+            this.particles.push(new Particle(
+              pu.x, pu.y, Math.cos(a) * 2.5, Math.sin(a) * 2.5 - 1,
+              700, '#ffe680', 2.5
+            ));
+          }
+        }
+      });
+    }
+    if (this.activePowerUp) {
+      this.activePowerUpTimer -= dt;
+      if (this.activePowerUpTimer <= 0) {
+        this.activePowerUp = null;
+        this.activePowerUpTimer = 0;
+        this.showMessage('効果が切れた', '', 1200);
+      }
+    }
 
     // Player deposit when entering egg room while carrying
     if (this.player.carrying && inEggRoom(this.player.x, this.player.y) && !this.player.carrying.deposited) {
@@ -4228,6 +4500,7 @@ class Game {
     this.foods = this.foods.filter(f => !f.deposited);
     this.friends = this.friends.filter(f => !f.dead);
     this.healItems = this.healItems.filter(i => !i.collected);
+    if (this.powerUps) this.powerUps = this.powerUps.filter(p => !p.collected);
     this.particles = this.particles.filter(p => !p.dead);
     this.damageNumbers = this.damageNumbers.filter(d => !d.dead);
 
@@ -4243,6 +4516,13 @@ class Game {
     }
     // Decay call-stress over ~5s after a call.
     if (this.callStress > 0) this.callStress = Math.max(0, this.callStress - dt / 5000);
+
+    // Combo timer decay
+    if (this.combo && this.combo.timerMs > 0) {
+      this.combo.timerMs -= dt;
+      if (this.combo.timerMs <= 0) { this.combo.count = 0; this.combo.timerMs = 0; }
+    }
+    if (this._comboBannerTimer > 0) this._comboBannerTimer -= dt;
 
     // Enemy spawn timer ticks faster while call stress is active (raid pause kept normal).
     const stressMul = this.raidActive ? 1 : 1 + this.callStress;
@@ -4272,7 +4552,7 @@ class Game {
         }
         if (close) {
           this._lastApproachBuzz = 1500; // 1.5s cooldown
-          if (navigator.vibrate) {
+          if (this.vibrationEnabled && navigator.vibrate) {
             try { navigator.vibrate(40); } catch (_) {}
           }
         }
@@ -4313,6 +4593,7 @@ class Game {
       if (aliveFriends >= 20) {
         if (!this.raidWarningGiven && this.raidTimer < 8000 && this.raidTimer > 0) {
           this.showMessage('⚠️ 敵の気配が近づいてくる…巣に戻る準備を！', 'warn', 4000);
+          this._hintOnce('raid_warn', '巣に戻って迎え撃とう! 不在だと仲間が大量に減る');
           this.raidWarningGiven = true;
         }
         if (!this.raidImminent && this.raidTimer < 3000 && this.raidTimer > 0) {
@@ -4623,8 +4904,20 @@ class Game {
     // Draw uncarried foods (below ants)
     this.foods.forEach(f => { if (!f.beingCarried) f.draw(ctx); });
 
+    // Pheromone trail (drawn under heal items / entities)
+    if (this.trailPoints && this.trailPoints.length) {
+      for (const p of this.trailPoints) {
+        const a = (p.life / p.maxLife) * 0.18;
+        ctx.fillStyle = `rgba(255, 255, 220, ${a})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     // Draw heal items
     this.healItems.forEach(h => h.draw(ctx));
+    if (this.powerUps) this.powerUps.forEach(p => p.draw(ctx));
 
     // Draw ants and enemies sorted by Y. Visually compact "idle in nest" ants
     // when the colony grows large: only render the first NEST_VISIBLE_CAP
@@ -4663,6 +4956,39 @@ class Game {
       if (d.x < dLeft || d.x > dRight || d.y < dTop || d.y > dBottom) return;
       d.draw(ctx);
     });
+
+    // Combo banner above the nest (briefly shown after a chained deposit).
+    if (this._comboBannerTimer > 0 && this.combo && this.combo.count >= 2) {
+      const t = this._comboBannerTimer / 1100;
+      const yPos = NEST_Y - NEST_RADIUS_BASE - 30 - (1 - t) * 30;
+      const screenX = (NEST_X - this.camera.x);  // approximate (scale=1 case)
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, t * 1.6);
+      ctx.font = 'bold 24px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillStyle = '#ffd700';
+      const text = `🔥 ${this.combo.count}連続!`;
+      ctx.strokeText(text, NEST_X, yPos);
+      ctx.fillText(text, NEST_X, yPos);
+      ctx.restore();
+    }
+
+    // Active power-up aura around the player.
+    if (this.player && !this.player.dead && this.activePowerUp) {
+      const def = POWERUP_DEFS[this.activePowerUp];
+      const t = (this.time || 0) * 0.012;
+      const pulse = 0.55 + 0.45 * Math.sin(t);
+      ctx.save();
+      ctx.strokeStyle = `rgba(${def.auraColor}, ${0.55 * pulse})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(this.player.x, this.player.y + 3, this.player.size + 12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // Call-stress aura around the player while the call window is hot.
     if (this.player && !this.player.dead && this.callStress > 0.4) {

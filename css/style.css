@@ -188,6 +188,73 @@ html, body {
   border: 1.5px solid rgba(255, 255, 255, 0.18);
 }
 
+#pauseBtn {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  font-size: 16px;
+  cursor: pointer;
+  pointer-events: auto;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+#pauseBtn:active { transform: scale(0.92); background: rgba(255, 255, 255, 0.25); }
+
+.settings-block {
+  margin: 14px 0;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.32);
+  border-radius: 12px;
+  text-align: left;
+}
+.settings-block h3 { color: #ffd700; font-size: 14px; margin-bottom: 8px; }
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 13px;
+  color: #ffe6c1;
+}
+.toggle-btn {
+  background: rgba(60, 60, 60, 0.85);
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-radius: 12px;
+  padding: 4px 14px;
+  font-size: 12px;
+  font-weight: bold;
+  font-family: inherit;
+  cursor: pointer;
+}
+.toggle-btn.on {
+  background: linear-gradient(135deg, #5fa53a, #468a26);
+  border-color: #b6e07a;
+}
+.pause-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.small-btn {
+  background: rgba(80, 80, 80, 0.85);
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: 12px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: bold;
+  font-family: inherit;
+  cursor: pointer;
+}
+.small-btn:active { transform: scale(0.95); }
+.small-btn.danger {
+  background: rgba(140, 30, 30, 0.85);
+  border-color: rgba(255, 180, 180, 0.5);
+}
+
 #sfxToggle {
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
