@@ -480,7 +480,13 @@ const FOOD_DEFS = {
   medium: { required: 3,  eggs: 4,  size: 16, color: '#5fa83a', label: '中' },
   large:  { required: 5,  eggs: 7,  size: 24, color: '#cc4848', label: '大' },
   huge:   { required: 8,  eggs: 11, size: 32, color: '#d4a050', label: '特大' },
-  giant:  { required: 12, eggs: 18, size: 42, color: '#e07ab0', label: '超特大' }
+  giant:  { required: 12, eggs: 18, size: 42, color: '#e07ab0', label: '超特大' },
+  honey:  { required: 6,  eggs: 20, size: 36, color: '#f9c11e', label: 'ハチミツ' }
+};
+
+// Per-terrain egg-yield multiplier — harsher terrain rewards more eggs.
+const FOOD_TERRAIN_EGG_BONUS = {
+  grass: 1.0, sand: 1.0, leaves: 1.1, flower: 1.0, mud: 1.4, concrete: 1.5, pond: 1.0
 };
 
 class Food {
@@ -498,6 +504,8 @@ class Food {
     this.beingCarried = false;
     this.deposited = false;
     this.bobble = Math.random() * Math.PI * 2;
+    // eggBonus is set after construction by spawnFood based on terrain.
+    this.eggBonus = 1.0;
   }
 
   update(dt, game) {
@@ -571,14 +579,18 @@ class Food {
       }
     });
     this.carriers = [];
-    // Spawn eggs
-    for (let i = 0; i < this.eggs; i++) {
+    // Spawn eggs (with risk-reward bonus from harsh terrain)
+    const eggsToSpawn = Math.max(1, Math.round(this.eggs * (this.eggBonus || 1)));
+    for (let i = 0; i < eggsToSpawn; i++) {
       const a = Math.random() * Math.PI * 2;
       const r = Math.random() * (EGG_ROOM_RADIUS - 15);
       game.eggs.push(new Egg(NEST_X + Math.cos(a) * r, NEST_Y + Math.sin(a) * r));
     }
     game.spawnDepositEffect(this.x, this.y);
-    game.showMessage(`巣に運んだ！ 卵 +${this.eggs}`, 'success');
+    const bonusTxt = (this.eggBonus && this.eggBonus > 1.0)
+      ? ` (✨ボーナス! +${eggsToSpawn - this.eggs})`
+      : '';
+    game.showMessage(`巣に運んだ！ 卵 +${eggsToSpawn}${bonusTxt}`, 'success');
   }
 
   draw(ctx) {
@@ -592,6 +604,16 @@ class Food {
     ctx.beginPath();
     ctx.ellipse(0, this.size * 0.7, this.size * 0.9, this.size * 0.3, 0, 0, Math.PI * 2);
     ctx.fill();
+
+    // Bonus ring for harsh-terrain food (risk-reward indicator)
+    if (this.eggBonus && this.eggBonus > 1.0 && this.type !== 'honey') {
+      const pulse = 0.6 + 0.4 * Math.sin(this.bobble * 2);
+      ctx.strokeStyle = `rgba(255, 200, 50, ${0.5 * pulse})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.size + 5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
 
     if (this.type === 'small') {
       // Seed
@@ -711,6 +733,54 @@ class Food {
       ctx.beginPath();
       ctx.ellipse(-this.size * 0.4, -this.size * 0.45, this.size * 0.4, this.size * 0.15, -0.3, 0, Math.PI * 2);
       ctx.fill();
+    } else if (this.type === 'honey') {
+      // Honey jar: golden pot + glowing aura + sparkles
+      const sz = this.size;
+      // Glow
+      const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, sz * 1.6);
+      glow.addColorStop(0, 'rgba(255, 220, 80, 0.55)');
+      glow.addColorStop(1, 'rgba(255, 220, 80, 0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(0, 0, sz * 1.6, 0, Math.PI * 2);
+      ctx.fill();
+      // Pot body (rounded jar)
+      ctx.fillStyle = '#c08020';
+      ctx.beginPath();
+      ctx.ellipse(0, sz * 0.15, sz * 0.85, sz * 0.95, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Honey overflowing top
+      ctx.fillStyle = '#f9c11e';
+      ctx.beginPath();
+      ctx.ellipse(0, -sz * 0.55, sz * 0.7, sz * 0.25, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Drip
+      ctx.beginPath();
+      ctx.moveTo(-sz * 0.5, -sz * 0.5);
+      ctx.bezierCurveTo(-sz * 0.55, -sz * 0.2, -sz * 0.4, sz * 0.05, -sz * 0.3, sz * 0.1);
+      ctx.lineTo(-sz * 0.2, sz * 0.05);
+      ctx.bezierCurveTo(-sz * 0.25, -sz * 0.2, -sz * 0.4, -sz * 0.4, -sz * 0.45, -sz * 0.5);
+      ctx.closePath();
+      ctx.fill();
+      // Pot rim
+      ctx.fillStyle = '#a0681c';
+      ctx.beginPath();
+      ctx.ellipse(0, -sz * 0.55, sz * 0.75, sz * 0.13, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Highlight
+      ctx.fillStyle = 'rgba(255, 255, 220, 0.5)';
+      ctx.beginPath();
+      ctx.ellipse(-sz * 0.4, sz * 0.05, sz * 0.18, sz * 0.4, -0.2, 0, Math.PI * 2);
+      ctx.fill();
+      // Floating sparkles
+      ctx.fillStyle = '#fff8a0';
+      for (let i = 0; i < 4; i++) {
+        const a = this.bobble * 1.2 + i * Math.PI / 2;
+        const r = sz * 1.1;
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * r, Math.sin(a) * r * 0.6 - sz * 0.6, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     ctx.restore();
@@ -1659,6 +1729,18 @@ class GrassTuft {
 const TILE_SIZE = 80;
 const TERRAIN_TYPES = ['grass', 'pond', 'sand', 'mud', 'flower', 'leaves', 'concrete'];
 
+// Per-terrain enemy spawn config: weight (relative spawn frequency, 0 = none),
+// bias (preferred enemy type), scale (HP/ATK multiplier for that biome).
+const ENEMY_TERRAIN = {
+  grass:    { weight: 1.0, bias: null,     scale: 1.0 },
+  pond:     { weight: 0,   bias: null,     scale: 1.0 },
+  sand:     { weight: 0.8, bias: 'spider', scale: 1.0 },
+  mud:      { weight: 1.4, bias: 'beetle', scale: 1.1 },
+  flower:   { weight: 0.6, bias: 'wasp',   scale: 1.0 },
+  leaves:   { weight: 1.2, bias: 'spider', scale: 1.0 },
+  concrete: { weight: 1.5, bias: 'beetle', scale: 1.2 }
+};
+
 // Per-tile gameplay effects. `dpsOnGround` = HP per second drained on ground units.
 // `flyingImmune` = wasps and similar ignore the slow/dps penalty.
 const TERRAIN_DEFS = {
@@ -2288,6 +2370,8 @@ class Game {
     this.raidEnemies = [];
     this.raidWarningGiven = false;
     this.raidImminent = false;
+    // Call-window suspense: rises to 1.0 when calling friends, decays to 0 over ~5s.
+    this.callStress = 0;
     // Set of biome types unlocked so far (drives enemy/food unlock gates).
     this.unlockedBiomes = new Set();
     // Initial terrain: pure grass. New biomes appear east as the colony grows.
@@ -2523,6 +2607,8 @@ class Game {
     const total = switched + refreshed;
     if (total > 0) {
       this.spawnCallEffect();
+      // Mark a "call window" so spawns intensify during the suspenseful wait.
+      this.callStress = 1;
       if (switched > 0) {
         this.showMessage(`仲間 ${switched}匹を呼んだ！`, 'success', 1200);
       } else {
@@ -2666,7 +2752,31 @@ class Game {
       }
     }
 
-    this.foods.push(new Food(x, y, type));
+    // Honey jar: rare drop on harsh terrain (mud/pond/concrete) starting from
+    // stage 2 (pond unlocked). Only one honey on the field at once.
+    const isHarsh = (terrainHere === 'mud' || terrainHere === 'pond' || terrainHere === 'concrete');
+    const honeyOnField = this.foods.some(f => !f.deposited && f.type === 'honey');
+    if (isHarsh && stage >= 2 && !honeyOnField && Math.random() < 0.04) {
+      type = 'honey';
+      // Announce the rare find
+      this.showMessage('🍯 珍しい餌が現れた! でも危険…', 'success', 3000);
+      // Honey attracts wasps when pond is unlocked: spawn 1-2 nearby
+      if (this.unlockedBiomes.has('pond')) {
+        const guards = 1 + (Math.random() < 0.5 ? 1 : 0);
+        for (let g = 0; g < guards; g++) {
+          if (this.enemies.filter(e => !e.dead).length >= this.getMaxEnemies()) break;
+          const a = Math.random() * Math.PI * 2;
+          const r = rand(60, 100);
+          const ex = clamp(x + Math.cos(a) * r, 30, WORLD_WIDTH - 30);
+          const ey = clamp(y + Math.sin(a) * r, 30, NEST_Y - NEST_RADIUS_BASE - 30);
+          this.enemies.push(new Enemy(ex, ey, 'wasp', 1.0));
+        }
+      }
+    }
+
+    const newFood = new Food(x, y, type);
+    newFood.eggBonus = FOOD_TERRAIN_EGG_BONUS[terrainHere] || 1.0;
+    this.foods.push(newFood);
   }
 
   getMaxEnemies() {
@@ -2677,17 +2787,6 @@ class Game {
 
   spawnEnemy() {
     if (this.enemies.filter(e => !e.dead).length >= this.getMaxEnemies()) return;
-
-    // Per-terrain spawn weight & type bias & power scale
-    const ENEMY_TERRAIN = {
-      grass:    { weight: 1.0, bias: null,     scale: 1.0 },
-      pond:     { weight: 0,   bias: null,     scale: 1.0 },
-      sand:     { weight: 0.8, bias: 'spider', scale: 1.0 },
-      mud:      { weight: 1.4, bias: 'beetle', scale: 1.1 },
-      flower:   { weight: 0.6, bias: 'wasp',   scale: 1.0 },
-      leaves:   { weight: 1.2, bias: 'spider', scale: 1.0 },
-      concrete: { weight: 1.5, bias: 'beetle', scale: 1.2 }
-    };
 
     let x = 0, y = 0, terrainHere = 'grass', accepted = false;
     let bestX = 0, bestY = 0, bestTerrain = 'grass', haveBest = false;
@@ -2744,6 +2843,35 @@ class Game {
     }
 
     this.enemies.push(new Enemy(x, y, type, cfg.scale));
+  }
+
+  // Carry-time ambush spawn: place an enemy at a random angle from (cx, cy),
+  // 90-160px away, outside the nest. Uses normal spawnEnemy logic for type
+  // selection by calling spawnEnemy() against a temporarily-set bias point.
+  _spawnAmbushNear(cx, cy) {
+    let x = 0, y = 0, ok = false;
+    for (let i = 0; i < 8; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = rand(90, 160);
+      x = clamp(cx + Math.cos(a) * r, 30, WORLD_WIDTH - 30);
+      y = clamp(cy + Math.sin(a) * r, 30, NEST_Y - NEST_RADIUS_BASE - 30);
+      if (Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 60) continue;
+      ok = true; break;
+    }
+    if (!ok) return;
+    const terrainHere = this.terrain ? this.terrain.getAt(x, y) : 'grass';
+    // Type follows biome unlock rules (mirrors spawnEnemy)
+    const hasMud = this.unlockedBiomes.has('mud');
+    const hasPond = this.unlockedBiomes.has('pond');
+    const r = Math.random();
+    let type;
+    if (!hasMud && !hasPond) type = 'spider';
+    else if (hasMud && !hasPond) type = r < 0.65 ? 'spider' : 'beetle';
+    else if (!hasMud && hasPond) type = r < 0.65 ? 'spider' : 'wasp';
+    else type = r < 0.45 ? 'spider' : r < 0.75 ? 'wasp' : 'beetle';
+    // Use the terrain's power scale so harsh-terrain ambushes still feel right
+    const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
+    this.enemies.push(new Enemy(x, y, type, cfg.scale || 1.0));
   }
 
   spawnHealItem() {
@@ -2979,7 +3107,12 @@ class Game {
       const baseInterval = Math.max(floor, 8000 - this.friends.length * 50);
       this.foodSpawnTimer = baseInterval + rand(0, 3000);
     }
-    this.enemySpawnTimer -= dt;
+    // Decay call-stress over ~5s after a call.
+    if (this.callStress > 0) this.callStress = Math.max(0, this.callStress - dt / 5000);
+
+    // Enemy spawn timer ticks faster while call stress is active (raid pause kept normal).
+    const stressMul = this.raidActive ? 1 : 1 + this.callStress;
+    this.enemySpawnTimer -= dt * stressMul;
     if (this.enemySpawnTimer <= 0) {
       this.spawnEnemy();
       const totalAnts = 1 + this.friends.length;
@@ -2988,6 +3121,23 @@ class Game {
       if (!this.firstEnemySeen) {
         this.firstEnemySeen = true;
         setTimeout(() => this.showMessage('敵だ！攻撃か仲間を呼ぼう！', 'warn', 3000), 500);
+      }
+    }
+
+    // Carry-time ambush: when a food is being carried, occasionally spawn an
+    // extra enemy nearby. Skipped during raids to avoid overload.
+    if (!this.raidActive) {
+      for (const food of this.foods) {
+        if (!food.beingCarried || food.deposited) continue;
+        if (this.enemies.filter(e => !e.dead).length >= this.getMaxEnemies()) break;
+        const now = performance.now();
+        if (food._lastAmbushTime && now - food._lastAmbushTime < 8000) continue;
+        // Per-second probability: 1% base + scales with colony (max ~3% at 100+)
+        const prob = (0.01 + Math.min(0.02, this.friends.length * 0.0002)) * (dt / 1000);
+        if (Math.random() < prob) {
+          food._lastAmbushTime = now;
+          this._spawnAmbushNear(food.x, food.y);
+        }
       }
     }
     this.healSpawnTimer -= dt;
@@ -3132,6 +3282,19 @@ class Game {
 
     drawables.sort((a, b) => a.y - b.y);
     drawables.forEach(d => d.draw(ctx));
+
+    // Call-stress aura around the player while the call window is hot.
+    if (this.player && !this.player.dead && this.callStress > 0.4) {
+      ctx.save();
+      const pulse = 0.5 + 0.5 * Math.sin((this.time || 0) * 0.012);
+      const alpha = (this.callStress - 0.3) * 0.6 * pulse;
+      ctx.strokeStyle = `rgba(255, 60, 60, ${alpha})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(this.player.x, this.player.y + 3, 24, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // "+N匹" badge inside the nest when many idle ants are hidden
     if (nestIdleHidden > 0) {
