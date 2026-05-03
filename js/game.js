@@ -4,15 +4,23 @@
 
 // ---------- Constants ----------
 // World dimensions are mutable to support runtime expansion (Issue #7).
-let WORLD_WIDTH = 1400;
-let WORLD_HEIGHT = 2000;
+// The world is large from the start; only the initial zone (around the nest)
+// is accessible. Other tiles are rock and unlock when new zones appear.
+let WORLD_WIDTH = 5000;
+let WORLD_HEIGHT = 5500;
 
-// Nest position is fixed at the original world center; world growth happens
-// to the east (right). Coordinates remain stable for all existing entities.
-let NEST_X = WORLD_WIDTH / 2;
-let NEST_Y = WORLD_HEIGHT - 220;
+// Nest position is fixed inside the initial zone, near the south of it.
+let NEST_X = 2500;
+let NEST_Y = 4400;
 const NEST_RADIUS_BASE = 120;
 const EGG_ROOM_RADIUS = 70;
+
+// Initial accessible zone bounds (rectangle around / above the nest).
+const INITIAL_ZONE_HALF_W = 700;   // → 1400 wide total
+const INITIAL_ZONE_TOP    = 1700;  // → reaches up to NEST_Y - 1700
+const INITIAL_ZONE_BOTTOM = 180;   // → reaches down to NEST_Y + 180 (covers nest disc)
+// New zones are squares ≈ 25% of the initial zone area.
+const ZONE_SIZE = 800;
 
 const PLAYER_SPEED = 2.6;
 const FRIEND_SPEED = 2.3;
@@ -193,8 +201,11 @@ class Ant {
       if (m > 0.1) {
         const nx = dx / m;
         const ny = dy / m;
-        this.x += nx * speed;
-        this.y += ny * speed;
+        const newX = this.x + nx * speed;
+        const newY = this.y + ny * speed;
+        // Allow sliding along rock walls: try each axis independently.
+        if (game.isWalkableAt(newX, this.y)) this.x = newX;
+        if (game.isWalkableAt(this.x, newY)) this.y = newY;
         this.targetAngle = Math.atan2(ny, nx);
         moving = true;
       }
@@ -216,7 +227,7 @@ class Ant {
       if (food.carriers[0] === this) {
         const req = food.required;
         const slow = req >= 8 ? 0.40 : req >= 5 ? 0.50 : req >= 3 ? 0.60 : 0.85;
-        this.moveToward({ x: NEST_X, y: NEST_Y }, this.speed * slow);
+        this.moveToward({ x: NEST_X, y: NEST_Y }, this.speed * slow, game);
       }
       this._moving = true;
       return;
@@ -230,7 +241,7 @@ class Ant {
     if (this.state === 'attacking' && this.target && !this.target.dead) {
       const d = dist(this, this.target);
       if (d > 26) {
-        this.moveToward(this.target, this.speed * 0.95);
+        this.moveToward(this.target, this.speed * 0.95, game);
         moving = true;
       } else if (this.attackCooldown <= 0) {
         if (this.target.takeDamage) this.target.takeDamage(this.attackPower, game, this);
@@ -254,10 +265,10 @@ class Ant {
       const player = game.player;
       const d = dist(this, player);
       if (d > 50) {
-        this.moveToward(player, this.speed * 0.95);
+        this.moveToward(player, this.speed * 0.95, game);
         moving = true;
       } else if (d > 30) {
-        this.moveToward(player, this.speed * 0.5);
+        this.moveToward(player, this.speed * 0.5, game);
         moving = true;
       }
 
@@ -323,19 +334,23 @@ class Ant {
       };
       this.wanderTimer = rand(2000, 4500);
     }
-    this.moveToward(this.wanderTarget, this.speed * 0.35);
+    this.moveToward(this.wanderTarget, this.speed * 0.35, game);
     moving = true;
     this._moving = moving;
   }
 
-  moveToward(target, spd) {
+  moveToward(target, spd, game) {
     const dx = target.x - this.x;
     const dy = target.y - this.y;
     const d = Math.hypot(dx, dy);
     if (d > 0.5) {
       const eff = spd * (this._terrainSpeedMul || 1);
-      this.x += (dx / d) * eff;
-      this.y += (dy / d) * eff;
+      const stepX = (dx / d) * eff;
+      const stepY = (dy / d) * eff;
+      const newX = this.x + stepX;
+      const newY = this.y + stepY;
+      if (!game || game.isWalkableAt(newX, this.y)) this.x = newX;
+      if (!game || game.isWalkableAt(this.x, newY)) this.y = newY;
       this.targetAngle = Math.atan2(dy, dx);
     }
   }
@@ -1083,7 +1098,7 @@ class Enemy {
     if (this.target) {
       const d = dist(this, this.target);
       if (d > this.attackRange) {
-        this.moveToward(this.target, this.speed);
+        this.moveToward(this.target, this.speed, game);
         moving = true;
       } else if (this.attackCooldown <= 0) {
         if (this.target.takeDamage) this.target.takeDamage(this.attackPower, game, this);
@@ -1091,7 +1106,7 @@ class Enemy {
         game.spawnHitEffect(this.target.x, this.target.y);
       }
     } else {
-      this.wander(dt);
+      this.wander(dt, game);
       moving = !!this.wanderTarget;
     }
     this._moving = moving;
@@ -1109,7 +1124,7 @@ class Enemy {
           this.dashAngle = Math.atan2(this.target.y - this.y, this.target.x - this.x);
           this.targetAngle = this.dashAngle;
         } else {
-          this.moveToward(this.target, this.speed);
+          this.moveToward(this.target, this.speed, game);
           moving = true;
         }
       } else if (this.behaviorState === 'charging') {
@@ -1129,8 +1144,9 @@ class Enemy {
         const newX = this.x + nx;
         const newY = this.y + ny;
         if (this.isRaider || !inNest(newX, newY)) {
-          this.x = clamp(newX, 20, WORLD_WIDTH - 20);
-          this.y = clamp(newY, 20, WORLD_HEIGHT - 20);
+          // Rock walls block dashes too — but along each axis so we may slide.
+          if (game.isWalkableAt(newX, this.y)) this.x = clamp(newX, 20, WORLD_WIDTH - 20);
+          if (game.isWalkableAt(this.x, newY)) this.y = clamp(newY, 20, WORLD_HEIGHT - 20);
         }
         moving = true;
         // Hit detection vs target and other ants in path (raiders also hit in-nest friends/eggs)
@@ -1155,7 +1171,7 @@ class Enemy {
         }
       }
     } else {
-      this.wander(dt);
+      this.wander(dt, game);
       moving = !!this.wanderTarget;
     }
     this._moving = moving;
@@ -1179,8 +1195,10 @@ class Enemy {
           const tangentY = dx / m;
           const radialX = (dx / m) * (-radial * 0.05);
           const radialY = (dy / m) * (-radial * 0.05);
-          this.x += tangentX * this.speed + radialX * this.speed;
-          this.y += tangentY * this.speed + radialY * this.speed;
+          const hvX = this.x + tangentX * this.speed + radialX * this.speed;
+          const hvY = this.y + tangentY * this.speed + radialY * this.speed;
+          if (game.isWalkableAt(hvX, this.y)) this.x = hvX;
+          if (game.isWalkableAt(this.x, hvY)) this.y = hvY;
           this.targetAngle = Math.atan2(this.target.y - this.y, this.target.x - this.x);
         }
         moving = true;
@@ -1196,8 +1214,9 @@ class Enemy {
         const dashSpeed = 5.5;
         const nx = Math.cos(this.dashAngle) * dashSpeed;
         const ny = Math.sin(this.dashAngle) * dashSpeed;
-        this.x += nx;
-        this.y += ny;
+        const dvX = this.x + nx, dvY = this.y + ny;
+        if (game.isWalkableAt(dvX, this.y)) this.x = dvX;
+        if (game.isWalkableAt(this.x, dvY)) this.y = dvY;
         this.targetAngle = this.dashAngle;
         moving = true;
         // Hit if close
@@ -1219,8 +1238,10 @@ class Enemy {
           const dy = this.y - this.target.y;
           const m = Math.hypot(dx, dy) || 1;
           const speed = 4;
-          this.x += (dx / m) * speed;
-          this.y += (dy / m) * speed;
+          const rtX = this.x + (dx / m) * speed;
+          const rtY = this.y + (dy / m) * speed;
+          if (game.isWalkableAt(rtX, this.y)) this.x = rtX;
+          if (game.isWalkableAt(this.x, rtY)) this.y = rtY;
         }
         moving = true;
         this.behaviorTimer += dt;
@@ -1234,31 +1255,37 @@ class Enemy {
       this.x = clamp(this.x, 20, WORLD_WIDTH - 20);
       this.y = clamp(this.y, 20, WORLD_HEIGHT - 20);
     } else {
-      this.wander(dt);
+      this.wander(dt, game);
       moving = !!this.wanderTarget;
       this.behaviorState = 'approach';
     }
     this._moving = moving;
   }
 
-  wander(dt) {
+  wander(dt, game) {
     this.wanderTimer -= dt;
     if (!this.wanderTarget || this.wanderTimer <= 0 ||
         dist(this, this.wanderTarget) < 10) {
-      const a = Math.random() * Math.PI * 2;
-      const r = rand(40, 140);
-      this.wanderTarget = {
-        x: clamp(this.startX + Math.cos(a) * r, 30, WORLD_WIDTH - 30),
-        y: clamp(this.startY + Math.sin(a) * r, 30, WORLD_HEIGHT - 30)
-      };
+      // Try a few random targets to avoid landing on rock (would just stop them dead).
+      let tries = 0, target;
+      do {
+        const a = Math.random() * Math.PI * 2;
+        const r = rand(40, 140);
+        target = {
+          x: clamp(this.startX + Math.cos(a) * r, 30, WORLD_WIDTH - 30),
+          y: clamp(this.startY + Math.sin(a) * r, 30, WORLD_HEIGHT - 30)
+        };
+        tries++;
+      } while (game && game.terrain && game.terrain.getAt(target.x, target.y) === 'rock' && tries < 6);
+      this.wanderTarget = target;
       this.wanderTimer = rand(2000, 4000);
     }
     if (this.wanderTarget && !inNest(this.wanderTarget.x, this.wanderTarget.y)) {
-      this.moveToward(this.wanderTarget, this.speed * 0.55);
+      this.moveToward(this.wanderTarget, this.speed * 0.55, game);
     }
   }
 
-  moveToward(t, spd) {
+  moveToward(t, spd, game) {
     const dx = t.x - this.x;
     const dy = t.y - this.y;
     const d = Math.hypot(dx, dy);
@@ -1278,8 +1305,9 @@ class Enemy {
         this.x = lerp(this.x, tx, 0.1);
         this.y = lerp(this.y, ty, 0.1);
       } else {
-        this.x = newX;
-        this.y = newY;
+        // Block movement on rock; allow sliding along walls per axis.
+        if (!game || game.isWalkableAt(newX, this.y)) this.x = newX;
+        if (!game || game.isWalkableAt(this.x, newY)) this.y = newY;
       }
       this.targetAngle = Math.atan2(dy, dx);
     }
@@ -1327,6 +1355,34 @@ class Enemy {
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.arc(this.x, this.y + 3, this.size + 14, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // Boss marker — golden crown above the body and brighter halo.
+    if (this.isBoss) {
+      ctx.save();
+      const halo = ctx.createRadialGradient(this.x, this.y + 3, 0, this.x, this.y + 3, this.size + 24);
+      halo.addColorStop(0, 'rgba(255, 215, 60, 0.35)');
+      halo.addColorStop(1, 'rgba(255, 215, 60, 0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y + 3, this.size + 24, 0, Math.PI * 2);
+      ctx.fill();
+      // Crown above head
+      const cy = this.y - this.size - 10;
+      ctx.fillStyle = '#ffd24a';
+      ctx.strokeStyle = '#7a5210';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(this.x - 10, cy + 6);
+      ctx.lineTo(this.x - 8,  cy - 4);
+      ctx.lineTo(this.x - 4,  cy + 1);
+      ctx.lineTo(this.x,      cy - 6);
+      ctx.lineTo(this.x + 4,  cy + 1);
+      ctx.lineTo(this.x + 8,  cy - 4);
+      ctx.lineTo(this.x + 10, cy + 6);
+      ctx.closePath();
+      ctx.fill();
       ctx.stroke();
       ctx.restore();
     }
@@ -1748,7 +1804,7 @@ class GrassTuft {
 
 // ---------- Terrain ----------
 const TILE_SIZE = 80;
-const TERRAIN_TYPES = ['grass', 'pond', 'sand', 'mud', 'flower', 'leaves', 'concrete'];
+const TERRAIN_TYPES = ['rock', 'grass', 'pond', 'sand', 'mud', 'flower', 'leaves', 'concrete'];
 
 // Per-terrain enemy spawn config: weight (relative spawn frequency, 0 = none),
 // bias (preferred enemy type), scale (HP/ATK multiplier for that biome).
@@ -1764,14 +1820,16 @@ const ENEMY_TERRAIN = {
 
 // Per-tile gameplay effects. `dpsOnGround` = HP per second drained on ground units.
 // `flyingImmune` = wasps and similar ignore the slow/dps penalty.
+// `walkable: false` means the tile is impassable (rock walls).
 const TERRAIN_DEFS = {
-  grass:    { speed: 1.00, dpsOnGround:  0,   flyingImmune: false, footstepColor: null },
-  pond:     { speed: 0.45, dpsOnGround:  1.5, flyingImmune: true,  footstepColor: '#a0d8ff' },
-  sand:     { speed: 0.75, dpsOnGround:  0,   flyingImmune: false, footstepColor: '#e8c98a' },
-  mud:      { speed: 0.55, dpsOnGround:  0.6, flyingImmune: false, footstepColor: '#5a3a1f' },
-  flower:   { speed: 1.00, dpsOnGround: -0.2, flyingImmune: false, footstepColor: null },
-  leaves:   { speed: 0.85, dpsOnGround:  0,   flyingImmune: false, footstepColor: '#b8742a' },
-  concrete: { speed: 1.15, dpsOnGround:  0,   flyingImmune: false, footstepColor: null }
+  rock:     { speed: 0,    dpsOnGround:  0,   flyingImmune: false, footstepColor: null, walkable: false },
+  grass:    { speed: 1.00, dpsOnGround:  0,   flyingImmune: false, footstepColor: null, walkable: true  },
+  pond:     { speed: 0.45, dpsOnGround:  1.5, flyingImmune: true,  footstepColor: '#a0d8ff', walkable: true },
+  sand:     { speed: 0.75, dpsOnGround:  0,   flyingImmune: false, footstepColor: '#e8c98a', walkable: true },
+  mud:      { speed: 0.55, dpsOnGround:  0.6, flyingImmune: false, footstepColor: '#5a3a1f', walkable: true },
+  flower:   { speed: 1.00, dpsOnGround: -0.2, flyingImmune: false, footstepColor: null, walkable: true },
+  leaves:   { speed: 0.85, dpsOnGround:  0,   flyingImmune: false, footstepColor: '#b8742a', walkable: true },
+  concrete: { speed: 1.15, dpsOnGround:  0,   flyingImmune: false, footstepColor: null, walkable: true }
 };
 
 // Base colors used as fallback rendering before per-type detail kicks in.
@@ -1792,18 +1850,34 @@ class TerrainGrid {
     this.rows = Math.ceil(worldH / TILE_SIZE);
     this.tiles = [];
     for (let r = 0; r < this.rows; r++) {
-      const row = new Array(this.cols).fill('grass');
+      // Default = rock. Zones (grass + biomes) are stamped over the top.
+      const row = new Array(this.cols).fill('rock');
       this.tiles.push(row);
     }
     this.animPhase = 0;
   }
 
-  // World-space coords → terrain type
+  // World-space coords → terrain type. Out-of-bounds counts as rock so
+  // entities can't sneak past the world edge.
   getAt(x, y) {
     const tx = Math.floor(x / this.tileSize);
     const ty = Math.floor(y / this.tileSize);
-    if (ty < 0 || ty >= this.rows || tx < 0 || tx >= this.cols) return 'grass';
+    if (ty < 0 || ty >= this.rows || tx < 0 || tx >= this.cols) return 'rock';
     return this.tiles[ty][tx];
+  }
+
+  // Fill a rectangular zone with a single terrain type. Used for stamping
+  // the initial grass area and the grass base of new biome zones.
+  fillRect(bounds, type) {
+    const tx0 = Math.max(0, Math.floor(bounds.x0 / this.tileSize));
+    const ty0 = Math.max(0, Math.floor(bounds.y0 / this.tileSize));
+    const tx1 = Math.min(this.cols, Math.ceil(bounds.x1 / this.tileSize));
+    const ty1 = Math.min(this.rows, Math.ceil(bounds.y1 / this.tileSize));
+    for (let r = ty0; r < ty1; r++) {
+      for (let c = tx0; c < tx1; c++) {
+        this.tiles[r][c] = type;
+      }
+    }
   }
 
   // Place a roughly elliptical blob of `type` around tile (tx, ty)
@@ -1976,6 +2050,13 @@ class TerrainGrid {
 
   _drawTileBase(ctx, x, y, type, c, r) {
     const ts = this.tileSize;
+    if (type === 'rock') {
+      // Solid impassable stone — slightly varied between tiles for texture.
+      const shade = 56 + ((c * 7 + r * 13) % 16);
+      ctx.fillStyle = `rgb(${shade}, ${shade - 4}, ${shade - 8})`;
+      ctx.fillRect(x, y, ts, ts);
+      return;
+    }
     if (type === 'pond') {
       const grad = ctx.createLinearGradient(x, y, x, y + ts);
       grad.addColorStop(0, '#3f86d0');
@@ -2003,6 +2084,43 @@ class TerrainGrid {
   _drawTileDeco(ctx, x, y, type, c, r) {
     const ts = this.tileSize;
     const phase = this.animPhase;
+
+    if (type === 'rock') {
+      // Cracks + a few darker speckles to read as rock.
+      ctx.strokeStyle = 'rgba(20,20,20,0.55)';
+      ctx.lineWidth = 1;
+      const sx = x + this._rand01(c, r, 1) * ts;
+      const sy = y + this._rand01(c, r, 2) * ts;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      let cx = sx, cy = sy;
+      for (let i = 0; i < 3; i++) {
+        cx += (this._rand01(c, r, i + 7) - 0.5) * ts * 0.6;
+        cy += (this._rand01(c, r, i + 17) - 0.5) * ts * 0.6;
+        ctx.lineTo(cx, cy);
+      }
+      ctx.stroke();
+      // Highlight chips
+      ctx.fillStyle = 'rgba(255,255,255,0.07)';
+      ctx.fillRect(x + this._rand01(c, r, 3) * ts, y + this._rand01(c, r, 4) * ts, 2, 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(x + this._rand01(c, r, 5) * ts, y + this._rand01(c, r, 6) * ts, 2, 2);
+      // Subtle inner edge against neighbours that aren't rock — gives a wall feel.
+      const neighbors = [
+        [c-1, r, 0, 0, 1.5, ts],     // left edge
+        [c+1, r, ts - 1.5, 0, 1.5, ts], // right edge
+        [c, r-1, 0, 0, ts, 1.5],     // top edge
+        [c, r+1, 0, ts - 1.5, ts, 1.5]  // bottom edge
+      ];
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      for (const [nc, nr, dx, dy, w, h] of neighbors) {
+        if (nr < 0 || nr >= this.rows || nc < 0 || nc >= this.cols) continue;
+        if (this.tiles[nr][nc] !== 'rock') {
+          ctx.fillRect(x + dx, y + dy, w, h);
+        }
+      }
+      return;
+    }
 
     if (type === 'pond') {
       // Ripples (animated arcs)
@@ -2207,14 +2325,14 @@ class Game {
 
   generateGrass() {
     this.grassTufts = [];
-    // Lots of grass tufts in the outside area
-    for (let i = 0; i < 80; i++) {
-      const x = rand(40, WORLD_WIDTH - 40);
-      const y = rand(40, NEST_Y - NEST_RADIUS_BASE - 40);
+    // Sprinkle tufts inside the initial zone (above the nest).
+    for (let i = 0; i < 60; i++) {
+      const x = rand(NEST_X - INITIAL_ZONE_HALF_W + 40, NEST_X + INITIAL_ZONE_HALF_W - 40);
+      const y = rand(NEST_Y - INITIAL_ZONE_TOP + 40, NEST_Y - NEST_RADIUS_BASE - 40);
       this.grassTufts.push(new GrassTuft(x, y, rand(0.7, 1.2)));
     }
-    // Some around the nest
-    for (let i = 0; i < 20; i++) {
+    // A few around the nest perimeter for visual flair.
+    for (let i = 0; i < 16; i++) {
       const a = Math.random() * Math.PI * 2;
       const r = rand(NEST_RADIUS_BASE + 30, NEST_RADIUS_BASE + 100);
       this.grassTufts.push(new GrassTuft(
@@ -2225,38 +2343,34 @@ class Game {
     }
   }
 
-  // Field expansion — appends a new biome region east of the current world.
-  // Each expansion adds ~25% of the initial playable area, dedicated to one
-  // biome type drawn from BIOME_SEQUENCE (cycling for later stages).
+  // Field expansion — appends a new ZONE_SIZE × ZONE_SIZE biome zone adjacent
+  // to one of the currently-unlocked zones. Direction is randomised so the
+  // map grows organically in any of N/S/E/W rather than only east.
+  // Rocks in the chosen direction get carved away (the new zone replaces them).
   expandWorld() {
-    const oldWidth = WORLD_WIDTH;
-    const newWidth = WORLD_WIDTH + WORLD_EXPAND_AMOUNT;
-    WORLD_WIDTH = newWidth;
+    const placement = this._pickZonePlacement();
+    if (!placement) return; // No valid spot — keep silently.
     this.expansionStage++;
-
     const biomeType = BIOME_SEQUENCE[(this.expansionStage - 1) % BIOME_SEQUENCE.length];
     const isFirstUnlock = !this.unlockedBiomes.has(biomeType);
     this.unlockedBiomes.add(biomeType);
 
-    // Extend the terrain grid and fill the new east strip with this biome
-    // (≈80% biome, ≈20% grass clearings).
+    // Carve the new zone out of the rock and stamp the biome over it.
+    const zone = { ...placement, biome: biomeType };
+    this.zones.push(zone);
     if (this.terrain) {
-      this.terrain.extend(newWidth, WORLD_HEIGHT);
-      this.terrain.fillBiome({
-        x0: oldWidth - 10, y0: 40,
-        x1: newWidth - 10,
-        y1: NEST_Y - NEST_RADIUS_BASE - 40
-      }, biomeType, 0.8);
+      this.terrain.fillRect(zone, 'grass');           // ground (carve rock)
+      this.terrain.fillBiome(zone, biomeType, 0.8);   // biome with grass clearings
     }
 
-    // Add grass tufts in the new strip (skip dense biome cells visually).
-    for (let i = 0; i < 12; i++) {
-      const x = rand(oldWidth + 20, newWidth - 40);
-      const y = rand(40, NEST_Y - NEST_RADIUS_BASE - 40);
+    // Add some grass tufts inside the new zone for visual flair.
+    for (let i = 0; i < 10; i++) {
+      const x = rand(zone.x0 + 20, zone.x1 - 20);
+      const y = rand(zone.y0 + 20, zone.y1 - 20);
       this.grassTufts.push(new GrassTuft(x, y, rand(0.7, 1.2)));
     }
 
-    // Visual feedback + 2-line announcement: headline + biome-specific detail.
+    // Visual feedback + 2-line announcement.
     this.shakeTimer = 600;
     this.shakeMag = 6;
     const info = BIOME_UNLOCK_INFO[biomeType];
@@ -2271,48 +2385,108 @@ class Game {
       if (this.gameState === 'playing') this.showMessage(detail, 'success', 3000);
     }, 700);
 
-    // Sparkle particles along the new edge
+    // Sparkle particles along the carve-away border (where rocks just moved).
     for (let i = 0; i < 24; i++) {
-      const x = rand(oldWidth - 10, newWidth);
-      const y = rand(40, NEST_Y - NEST_RADIUS_BASE - 40);
+      const x = rand(zone.x0, zone.x1);
+      const y = rand(zone.y0, zone.y1);
       this.particles.push(new Particle(x, y, rand(-0.5, 0.5), rand(-1.5, -0.5), rand(800, 1400), '#ffe680', rand(2, 3)));
     }
 
-    // Welcome gift: drop a heart in the new region as a small reward.
-    const giftX = oldWidth + WORLD_EXPAND_AMOUNT / 2;
-    const giftY = clamp(NEST_Y - NEST_RADIUS_BASE - 100, 80, NEST_Y - NEST_RADIUS_BASE - 60);
+    // Welcome gift: drop a heart in the new zone as a small reward.
+    const giftX = (zone.x0 + zone.x1) / 2;
+    const giftY = (zone.y0 + zone.y1) / 2;
     this.healItems.push(new HealItem(giftX, giftY));
 
-    // Seed the new strip with at least one new food and one new enemy so the
-    // player can feel the area is "alive" the moment it appears.
-    this._seedNewBiomeContent(oldWidth, newWidth, biomeType);
+    // Seed the new zone with at least one new food and one new enemy.
+    this._seedNewBiomeContent(zone, biomeType);
+  }
+
+  // Pick a position for the next zone: a ZONE_SIZE square attached to one of
+  // the existing zones in a random direction. Returns null if nothing valid.
+  _pickZonePlacement() {
+    const sz = ZONE_SIZE;
+    const tries = 80;
+    for (let i = 0; i < tries; i++) {
+      const base = pickRand(this.zones);
+      const dir  = pickRand(['N', 'S', 'E', 'W']);
+      let nx0, ny0;
+      if (dir === 'N') {
+        nx0 = base.x0 + (base.x1 - base.x0 - sz) / 2 + rand(-220, 220);
+        ny0 = base.y0 - sz;
+      } else if (dir === 'S') {
+        nx0 = base.x0 + (base.x1 - base.x0 - sz) / 2 + rand(-220, 220);
+        ny0 = base.y1;
+      } else if (dir === 'E') {
+        nx0 = base.x1;
+        ny0 = base.y0 + (base.y1 - base.y0 - sz) / 2 + rand(-220, 220);
+      } else { // W
+        nx0 = base.x0 - sz;
+        ny0 = base.y0 + (base.y1 - base.y0 - sz) / 2 + rand(-220, 220);
+      }
+      const candidate = { x0: nx0, y0: ny0, x1: nx0 + sz, y1: ny0 + sz };
+      if (this._zoneIsValid(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  _zoneIsValid(z) {
+    // Within world bounds (with margin)
+    if (z.x0 < 40 || z.y0 < 40 || z.x1 > WORLD_WIDTH - 40 || z.y1 > WORLD_HEIGHT - 40) return false;
+    // Doesn't overlap nest disc (with padding)
+    const cx = (z.x0 + z.x1) / 2, cy = (z.y0 + z.y1) / 2;
+    const halfW = (z.x1 - z.x0) / 2, halfH = (z.y1 - z.y0) / 2;
+    const nestPad = NEST_RADIUS_BASE + 60;
+    const nearestX = clamp(NEST_X, z.x0, z.x1);
+    const nearestY = clamp(NEST_Y, z.y0, z.y1);
+    if (Math.hypot(NEST_X - nearestX, NEST_Y - nearestY) < nestPad &&
+        !(cx === NEST_X && cy === NEST_Y)) {
+      // Allow if nest is already inside an existing zone — but new zones
+      // shouldn't graze the nest disc.
+      if (Math.hypot(NEST_X - nearestX, NEST_Y - nearestY) < nestPad) return false;
+    }
+    // Doesn't significantly overlap any existing zone
+    for (const other of this.zones) {
+      const overlapX = Math.min(z.x1, other.x1) - Math.max(z.x0, other.x0);
+      const overlapY = Math.min(z.y1, other.y1) - Math.max(z.y0, other.y0);
+      if (overlapX > 30 && overlapY > 30) return false;
+    }
+    return true;
   }
 
   // Place 1-2 fresh foods and 1-2 fresh enemies inside the newly opened biome
-  // strip. Used by expandWorld() so the new area always has visible content.
-  _seedNewBiomeContent(oldWidth, newWidth, biomeType) {
-    const yMin = 60;
-    const yMax = NEST_Y - NEST_RADIUS_BASE - 60;
-    const stripX0 = oldWidth + 20;
-    const stripX1 = newWidth - 30;
+  // zone. Used by expandWorld() so the new area always has visible content.
+  _seedNewBiomeContent(zone, biomeType) {
+    const yMin = zone.y0 + 30;
+    const yMax = zone.y1 - 30;
+    const stripX0 = zone.x0 + 30;
+    const stripX1 = zone.x1 - 30;
+    const pickWalkable = (allowPond) => {
+      // Try several positions to land on a non-rock (and optionally non-pond) tile.
+      for (let i = 0; i < 20; i++) {
+        const x = rand(stripX0, stripX1);
+        const y = rand(yMin, yMax);
+        const t = this.terrain ? this.terrain.getAt(x, y) : 'grass';
+        if (t === 'rock') continue;
+        if (!allowPond && t === 'pond') continue;
+        return { x, y, t };
+      }
+      return null;
+    };
 
-    // --- Foods ---
-    // Type matches what's currently unlocked, with a bias for medium/large to
-    // make the new area feel more rewarding than the starting strip.
+    // --- Foods (no pond placement — they would be unreachable) ---
     const stage = this.expansionStage;
     const foodCount = stage <= 2 ? 1 : 2;
     for (let i = 0; i < foodCount; i++) {
-      const x = rand(stripX0, stripX1);
-      const y = rand(yMin, yMax);
+      const pos = pickWalkable(false);
+      if (!pos) continue;
       let type;
       if (stage < 1) type = 'small';
       else if (stage < 2) type = Math.random() < 0.5 ? 'small' : 'medium';
       else if (stage < 3) type = Math.random() < 0.6 ? 'medium' : 'large';
       else if (stage < 4) type = Math.random() < 0.5 ? 'medium' : 'large';
       else type = Math.random() < 0.5 ? 'large' : 'huge';
-      const f = new Food(x, y, type);
-      const t = this.terrain ? this.terrain.getAt(x, y) : 'grass';
-      f.eggBonus = FOOD_TERRAIN_EGG_BONUS[t] || 1.0;
+      const f = new Food(pos.x, pos.y, type);
+      f.eggBonus = FOOD_TERRAIN_EGG_BONUS[pos.t] || 1.0;
       this.foods.push(f);
     }
 
@@ -2322,23 +2496,30 @@ class Game {
     const hasMud = this.unlockedBiomes.has('mud');
     const hasPond = this.unlockedBiomes.has('pond');
     for (let i = 0; i < enemyCount; i++) {
-      const x = rand(stripX0, stripX1);
-      const y = rand(yMin, yMax);
-      // Prefer the biome's biased type when the unlock allows it, else spider.
       let type = cfg.bias || 'spider';
       if (type === 'beetle' && !hasMud) type = 'spider';
       if (type === 'wasp'   && !hasPond) type = 'spider';
-      this.enemies.push(new Enemy(x, y, type, cfg.scale || 1.0));
+      const pos = pickWalkable(type === 'wasp');
+      if (!pos) continue;
+      this.enemies.push(new Enemy(pos.x, pos.y, type, cfg.scale || 1.0));
     }
   }
 
   // Begin a nest raid — a coordinated attack heading straight for the nest.
+  // Both squad size and per-raider strength scale with the colony, and an
+  // occasional very strong boss raider can join the formation.
   startRaid() {
     if (this.raidActive) return;
     if (this.friends.filter(f => !f.dead).length < 20) return;
     const totalAnts = 1 + this.friends.length;
-    // Squad size scales with colony
-    const count = clamp(3 + Math.floor(totalAnts / 80), 3, 10);
+
+    // Squad size: 3 → 22 across 0 → 1000 friends.
+    const count = clamp(3 + Math.floor(totalAnts / 50), 3, 22);
+    // Per-raider power scale: 1.0 → 1.8 across 0 → 1000 friends.
+    const powerScale = 1.0 + Math.min(0.8, totalAnts / 1000);
+    // Boss chance: 0% before 100 friends, ramping toward ~80% at 1000.
+    const bossChance = totalAnts < 100 ? 0 : Math.min(0.8, totalAnts / 800);
+    const includeBoss = Math.random() < bossChance;
 
     // Pick a random edge to spawn the formation
     const edge = Math.floor(Math.random() * 4);
@@ -2346,17 +2527,30 @@ class Game {
     if (edge === 0)      { baseX = rand(120, WORLD_WIDTH - 120); baseY = 60;             dx = 30; dy = 0;  }
     else if (edge === 1) { baseX = 60;                            baseY = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); dx = 0; dy = 30; }
     else                 { baseX = WORLD_WIDTH - 60;              baseY = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); dx = 0; dy = 30; }
-    if (edge === 0) {} // top
     if (edge >= 3) { baseX = rand(120, WORLD_WIDTH - 120); baseY = NEST_Y - NEST_RADIUS_BASE - 60; dx = 30; dy = 0; }
 
     this.raidEnemies = [];
+
+    // Boss raider — placed slightly behind the formation centre.
+    if (includeBoss) {
+      const bossX = clamp(baseX, 40, WORLD_WIDTH - 40);
+      const bossY = clamp(baseY, 40, WORLD_HEIGHT - 40);
+      const boss = new Enemy(bossX, bossY, 'beetle', powerScale * 3.0, true);
+      boss.isBoss = true;
+      this.enemies.push(boss);
+      this.raidEnemies.push(boss);
+    }
+
     for (let i = 0; i < count; i++) {
       const sx = clamp(baseX + (i - count / 2) * dx, 40, WORLD_WIDTH - 40);
       const sy = clamp(baseY + (i - count / 2) * dy, 40, WORLD_HEIGHT - 40);
-      // Type mix: mostly spider, some beetle, occasional wasp
+      // Type mix shifts toward beetles/wasps in late game (more variety + threat).
       const r = Math.random();
-      const type = r < 0.6 ? 'spider' : r < 0.85 ? 'beetle' : 'wasp';
-      const e = new Enemy(sx, sy, type, 1.0, true);
+      let type;
+      if (totalAnts < 200) type = r < 0.65 ? 'spider' : r < 0.88 ? 'beetle' : 'wasp';
+      else if (totalAnts < 500) type = r < 0.45 ? 'spider' : r < 0.75 ? 'beetle' : 'wasp';
+      else type = r < 0.30 ? 'spider' : r < 0.65 ? 'beetle' : 'wasp';
+      const e = new Enemy(sx, sy, type, powerScale, true);
       this.enemies.push(e);
       this.raidEnemies.push(e);
     }
@@ -2367,7 +2561,8 @@ class Game {
     this.raidImminent = false;
     this.raidArrived = false;
     this.raidPenaltyApplied = false;
-    this.showMessage(`⚠️ 巣に敵が来る！ (${count}体)`, 'warn', 3500);
+    const bossLabel = includeBoss ? ' + 👑ボス' : '';
+    this.showMessage(`⚠️ 巣に敵が来る！ (${count}体${bossLabel})`, 'warn', 3500);
   }
 
   endRaid(success) {
@@ -2455,10 +2650,10 @@ class Game {
 
   startGame() {
     // Reset world dimensions in case of replay after expansion
-    WORLD_WIDTH = 1400;
-    WORLD_HEIGHT = 2000;
-    NEST_X = WORLD_WIDTH / 2;
-    NEST_Y = WORLD_HEIGHT - 220;
+    WORLD_WIDTH = 5000;
+    WORLD_HEIGHT = 5500;
+    NEST_X = 2500;
+    NEST_Y = 4400;
 
     this.player = new Ant(NEST_X, NEST_Y - 60, true);
     this.friends = [];
@@ -2486,8 +2681,24 @@ class Game {
     this.callStress = 0;
     // Set of biome types unlocked so far (drives enemy/food unlock gates).
     this.unlockedBiomes = new Set();
-    // Initial terrain: pure grass. New biomes appear east as the colony grows.
+    // Zones: list of accessible rectangles. The first zone is the initial
+    // grass area around/above the nest; new zones unlock with expansions.
+    this.zones = [];
+    // Initial terrain: everything is rock by default; we then carve out the
+    // initial zone with grass.
     this.terrain = new TerrainGrid(WORLD_WIDTH, WORLD_HEIGHT);
+    const initialZone = {
+      x0: NEST_X - INITIAL_ZONE_HALF_W,
+      y0: NEST_Y - INITIAL_ZONE_TOP,
+      x1: NEST_X + INITIAL_ZONE_HALF_W,
+      y1: NEST_Y + INITIAL_ZONE_BOTTOM,
+      biome: 'grass'
+    };
+    this.zones.push(initialZone);
+    this.terrain.fillRect(initialZone, 'grass');
+    // Snap the camera so the first frame doesn't pan from (0,0).
+    this.camera.x = clamp(this.player.x - this.viewW / 2, 0, WORLD_WIDTH - this.viewW);
+    this.camera.y = clamp(this.player.y - this.viewH / 2, 0, WORLD_HEIGHT - this.viewH);
     // Regenerate grass for the (reset) initial world
     this.generateGrass();
     // Initial food
@@ -2832,17 +3043,20 @@ class Game {
                       : _stage === 2 ? 800
                       : Infinity;
 
-    // Find a candidate position weighted by terrain. Reject pond cells.
-    // Keep best-seen candidate so we always place something when possible.
+    // Find a candidate position weighted by terrain. Reject pond cells and
+    // anything that's still rock (outside an unlocked zone).
     let x = 0, y = 0, terrainHere = 'grass', accepted = false;
     let bestX = 0, bestY = 0, bestTerrain = 'grass', haveBest = false;
-    for (let attempt = 0; attempt < 14; attempt++) {
-      x = rand(60, WORLD_WIDTH - 60);
-      y = rand(60, NEST_Y - NEST_RADIUS_BASE - 60);
+    for (let attempt = 0; attempt < 18; attempt++) {
+      // Sample inside one of the unlocked zones to guarantee a walkable tile.
+      const zone = pickRand(this.zones);
+      x = rand(zone.x0 + 30, zone.x1 - 30);
+      y = rand(zone.y0 + 30, zone.y1 - 30);
       const dn = Math.hypot(x - NEST_X, y - NEST_Y);
       if (dn < NEST_RADIUS_BASE + 80) continue;
       if (dn > maxFromNest) continue;
       terrainHere = this.terrain ? this.terrain.getAt(x, y) : 'grass';
+      if (terrainHere === 'rock') continue;
       const w = FOOD_TERRAIN_WEIGHT[terrainHere] ?? 1.0;
       if (w <= 0) continue;
       if (!haveBest) { bestX = x; bestY = y; bestTerrain = terrainHere; haveBest = true; }
@@ -2934,16 +3148,25 @@ class Game {
 
     let x = 0, y = 0, terrainHere = 'grass', accepted = false;
     let bestX = 0, bestY = 0, bestTerrain = 'grass', haveBest = false;
-    for (let attempt = 0; attempt < 16; attempt++) {
-      // Spawn near edges
-      const edge = Math.floor(Math.random() * 4);
-      if (edge === 0) { x = rand(60, WORLD_WIDTH - 60); y = rand(40, 100); }
-      else if (edge === 1) { x = rand(60, WORLD_WIDTH - 60); y = rand(NEST_Y - NEST_RADIUS_BASE - 200, NEST_Y - NEST_RADIUS_BASE - 80); }
-      else if (edge === 2) { x = rand(40, 120); y = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); }
-      else { x = rand(WORLD_WIDTH - 120, WORLD_WIDTH - 40); y = rand(80, NEST_Y - NEST_RADIUS_BASE - 80); }
+    for (let attempt = 0; attempt < 18; attempt++) {
+      // Sample inside one of the unlocked zones (preferring zone edges for
+      // that "appearing from the wilderness" feel).
+      const zone = pickRand(this.zones);
+      const edgeBias = Math.random() < 0.6;
+      if (edgeBias) {
+        const side = Math.floor(Math.random() * 4);
+        if      (side === 0) { x = rand(zone.x0 + 30, zone.x1 - 30); y = rand(zone.y0 + 30, zone.y0 + 100); }
+        else if (side === 1) { x = rand(zone.x0 + 30, zone.x1 - 30); y = rand(zone.y1 - 100, zone.y1 - 30); }
+        else if (side === 2) { x = rand(zone.x0 + 30, zone.x0 + 100); y = rand(zone.y0 + 30, zone.y1 - 30); }
+        else                 { x = rand(zone.x1 - 100, zone.x1 - 30); y = rand(zone.y0 + 30, zone.y1 - 30); }
+      } else {
+        x = rand(zone.x0 + 30, zone.x1 - 30);
+        y = rand(zone.y0 + 30, zone.y1 - 30);
+      }
       if (Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 100) continue;
       if (this.player && dist({ x, y }, this.player) < 200) continue;
       terrainHere = this.terrain ? this.terrain.getAt(x, y) : 'grass';
+      if (terrainHere === 'rock') continue;
       const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
       if (cfg.weight <= 0) continue;
       if (!haveBest) { bestX = x; bestY = y; bestTerrain = terrainHere; haveBest = true; }
@@ -2994,12 +3217,13 @@ class Game {
   // selection by calling spawnEnemy() against a temporarily-set bias point.
   _spawnAmbushNear(cx, cy) {
     let x = 0, y = 0, ok = false;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 12; i++) {
       const a = Math.random() * Math.PI * 2;
       const r = rand(90, 160);
       x = clamp(cx + Math.cos(a) * r, 30, WORLD_WIDTH - 30);
-      y = clamp(cy + Math.sin(a) * r, 30, NEST_Y - NEST_RADIUS_BASE - 30);
+      y = clamp(cy + Math.sin(a) * r, 30, WORLD_HEIGHT - 30);
       if (Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 60) continue;
+      if (this.terrain && this.terrain.getAt(x, y) === 'rock') continue;
       ok = true; break;
     }
     if (!ok) return;
@@ -3016,6 +3240,15 @@ class Game {
     // Use the terrain's power scale so harsh-terrain ambushes still feel right
     const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
     this.enemies.push(new Enemy(x, y, type, cfg.scale || 1.0));
+  }
+
+  // True if (x, y) is on a tile a ground unit can stand on. Rock blocks both
+  // movement and spawning. Used by spawn validators and Ant/Enemy movement.
+  isWalkableAt(x, y) {
+    if (!this.terrain) return true;
+    const t = this.terrain.getAt(x, y);
+    const def = TERRAIN_DEFS[t];
+    return !def || def.walkable !== false;
   }
 
   // Reward for defeating an enemy: drop a small food where it died.
@@ -3039,12 +3272,16 @@ class Game {
 
   spawnHealItem() {
     if (this.healItems.length >= 2) return;
-    let x, y, attempts = 0;
-    do {
-      x = rand(80, WORLD_WIDTH - 80);
-      y = rand(80, NEST_Y - NEST_RADIUS_BASE - 60);
-      attempts++;
-    } while ((Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 100) && attempts < 10);
+    let x = 0, y = 0, ok = false;
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const zone = pickRand(this.zones);
+      x = rand(zone.x0 + 60, zone.x1 - 60);
+      y = rand(zone.y0 + 60, zone.y1 - 60);
+      if (Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 100) continue;
+      if (this.terrain && this.terrain.getAt(x, y) === 'rock') continue;
+      ok = true; break;
+    }
+    if (!ok) return;
     this.healItems.push(new HealItem(x, y));
   }
 
