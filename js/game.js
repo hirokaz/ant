@@ -1543,6 +1543,12 @@ class TerrainGrid {
     this.animPhase += dt * 0.001;
   }
 
+  // Stable per-tile pseudo-random in [0,1) — for decoration placement.
+  _rand01(c, r, salt = 0) {
+    const v = (c * 1973 + r * 9277 + salt * 31337);
+    return ((Math.sin(v) * 43758.5453) % 1 + 1) % 1;
+  }
+
   // Draw visible tiles only.
   draw(ctx, camX, camY, viewW, viewH) {
     const ts = this.tileSize;
@@ -1550,17 +1556,193 @@ class TerrainGrid {
     const r0 = Math.max(0, Math.floor(camY / ts));
     const c1 = Math.min(this.cols, Math.ceil((camX + viewW) / ts) + 1);
     const r1 = Math.min(this.rows, Math.ceil((camY + viewH) / ts) + 1);
+
+    // Pass 1: fill base color
     for (let r = r0; r < r1; r++) {
       for (let c = c0; c < c1; c++) {
         const t = this.tiles[r][c];
         if (t === 'grass') continue;
         const x = c * ts;
         const y = r * ts;
-        const color = TERRAIN_BASE_COLOR[t];
-        if (color) {
-          ctx.fillStyle = color;
-          ctx.fillRect(x, y, ts, ts);
+        this._drawTileBase(ctx, x, y, t, c, r);
+      }
+    }
+    // Pass 2: decorations on top
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
+        const t = this.tiles[r][c];
+        if (t === 'grass') continue;
+        const x = c * ts;
+        const y = r * ts;
+        this._drawTileDeco(ctx, x, y, t, c, r);
+      }
+    }
+  }
+
+  _drawTileBase(ctx, x, y, type, c, r) {
+    const ts = this.tileSize;
+    if (type === 'pond') {
+      const grad = ctx.createLinearGradient(x, y, x, y + ts);
+      grad.addColorStop(0, '#3f86d0');
+      grad.addColorStop(1, '#27598a');
+      ctx.fillStyle = grad;
+      ctx.fillRect(x, y, ts, ts);
+    } else if (type === 'sand') {
+      ctx.fillStyle = '#dcc188';
+      ctx.fillRect(x, y, ts, ts);
+    } else if (type === 'mud') {
+      ctx.fillStyle = '#5a3a1f';
+      ctx.fillRect(x, y, ts, ts);
+    } else if (type === 'flower') {
+      ctx.fillStyle = '#5fa53a';
+      ctx.fillRect(x, y, ts, ts);
+    } else if (type === 'leaves') {
+      ctx.fillStyle = '#7a5230';
+      ctx.fillRect(x, y, ts, ts);
+    } else if (type === 'concrete') {
+      ctx.fillStyle = '#9a9a9a';
+      ctx.fillRect(x, y, ts, ts);
+    }
+  }
+
+  _drawTileDeco(ctx, x, y, type, c, r) {
+    const ts = this.tileSize;
+    const phase = this.animPhase;
+
+    if (type === 'pond') {
+      // Ripples (animated arcs)
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 1.2;
+      const rx1 = this._rand01(c, r, 1);
+      const rx2 = this._rand01(c, r, 2);
+      for (let i = 0; i < 2; i++) {
+        const cx = x + (i === 0 ? rx1 : rx2) * ts;
+        const cy = y + (i === 0 ? rx2 : rx1) * ts;
+        const baseR = 6 + i * 3;
+        const t = (phase * 0.6 + i * 0.5 + rx1) % 1;
+        const rr = baseR + t * 12;
+        ctx.globalAlpha = (1 - t) * 0.6;
+        ctx.beginPath();
+        ctx.arc(cx, cy, rr, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      // Highlight glints
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      const gx = x + this._rand01(c, r, 3) * ts;
+      const gy = y + this._rand01(c, r, 4) * ts;
+      ctx.beginPath();
+      ctx.ellipse(gx, gy, 6, 1.5, 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (type === 'sand') {
+      // Fine grain specks
+      ctx.fillStyle = 'rgba(110,80,40,0.35)';
+      for (let i = 0; i < 18; i++) {
+        const dx = this._rand01(c, r, i) * ts;
+        const dy = this._rand01(c, r, i + 100) * ts;
+        ctx.fillRect(x + dx, y + dy, 1.4, 1.4);
+      }
+      // Lighter highlight specks
+      ctx.fillStyle = 'rgba(255,240,210,0.4)';
+      for (let i = 0; i < 6; i++) {
+        const dx = this._rand01(c, r, i + 200) * ts;
+        const dy = this._rand01(c, r, i + 300) * ts;
+        ctx.fillRect(x + dx, y + dy, 1.2, 1.2);
+      }
+    } else if (type === 'mud') {
+      // Puddle blotches
+      ctx.fillStyle = 'rgba(30,18,8,0.55)';
+      for (let i = 0; i < 4; i++) {
+        const dx = this._rand01(c, r, i) * ts;
+        const dy = this._rand01(c, r, i + 50) * ts;
+        const rad = 5 + this._rand01(c, r, i + 70) * 8;
+        ctx.beginPath();
+        ctx.ellipse(x + dx, y + dy, rad, rad * 0.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Wet sheen
+      ctx.fillStyle = 'rgba(150,110,70,0.18)';
+      ctx.beginPath();
+      ctx.ellipse(x + this._rand01(c,r,8) * ts, y + this._rand01(c,r,9) * ts, 12, 4, 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (type === 'flower') {
+      // Scatter flowers (5-petal)
+      const colors = ['#ff7eb1', '#ffd24a', '#ffffff', '#bb88ff'];
+      for (let i = 0; i < 6; i++) {
+        const dx = this._rand01(c, r, i) * ts;
+        const dy = this._rand01(c, r, i + 60) * ts;
+        const cidx = Math.floor(this._rand01(c, r, i + 30) * colors.length);
+        const sway = Math.sin(phase * 1.3 + this._rand01(c, r, i + 5) * Math.PI * 2) * 0.6;
+        ctx.fillStyle = colors[cidx];
+        const cx = x + dx + sway;
+        const cy = y + dy;
+        // 5 petals
+        for (let p = 0; p < 5; p++) {
+          const a = (p / 5) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.arc(cx + Math.cos(a) * 2.2, cy + Math.sin(a) * 2.2, 1.7, 0, Math.PI * 2);
+          ctx.fill();
         }
+        // Center
+        ctx.fillStyle = '#ffe34a';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 1.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (type === 'leaves') {
+      // Scattered leaves
+      const colors = ['#a55a25', '#d68635', '#e0a040', '#7d4419'];
+      for (let i = 0; i < 7; i++) {
+        const dx = this._rand01(c, r, i) * ts;
+        const dy = this._rand01(c, r, i + 40) * ts;
+        const cidx = Math.floor(this._rand01(c, r, i + 80) * colors.length);
+        const ang = this._rand01(c, r, i + 90) * Math.PI * 2;
+        ctx.save();
+        ctx.translate(x + dx, y + dy);
+        ctx.rotate(ang);
+        ctx.fillStyle = colors[cidx];
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 5, 2.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+        ctx.lineWidth = 0.6;
+        ctx.beginPath();
+        ctx.moveTo(-5, 0);
+        ctx.lineTo(5, 0);
+        ctx.stroke();
+        ctx.restore();
+      }
+    } else if (type === 'concrete') {
+      // Cracks
+      ctx.strokeStyle = 'rgba(40,40,40,0.5)';
+      ctx.lineWidth = 1;
+      const startX = x + this._rand01(c, r, 1) * ts;
+      const startY = y + this._rand01(c, r, 2) * ts;
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      let cx = startX, cy = startY;
+      for (let i = 0; i < 3; i++) {
+        const dx = (this._rand01(c, r, i + 10) - 0.5) * ts * 0.6;
+        const dy = (this._rand01(c, r, i + 20) - 0.5) * ts * 0.6;
+        cx += dx; cy += dy;
+        ctx.lineTo(cx, cy);
+      }
+      ctx.stroke();
+      // Edge seams (suggesting tile slabs)
+      ctx.strokeStyle = 'rgba(60,60,60,0.5)';
+      ctx.lineWidth = 1.3;
+      // Horizontal seam
+      const seamY = y + Math.floor(this._rand01(c, r, 11) * ts);
+      ctx.beginPath();
+      ctx.moveTo(x, seamY);
+      ctx.lineTo(x + ts, seamY);
+      ctx.stroke();
+      // Speckles
+      ctx.fillStyle = 'rgba(70,70,70,0.4)';
+      for (let i = 0; i < 6; i++) {
+        const dx = this._rand01(c, r, i + 30) * ts;
+        const dy = this._rand01(c, r, i + 33) * ts;
+        ctx.fillRect(x + dx, y + dy, 1.3, 1.3);
       }
     }
   }
