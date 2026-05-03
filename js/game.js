@@ -3053,7 +3053,9 @@ class Game {
 
     // --- Foods (no pond placement — they would be unreachable) ---
     const stage = this.expansionStage;
-    const foodCount = stage <= 2 ? 1 : 2;
+    // At least 5 foods in every new biome zone so the area feels rewarding
+    // immediately, with one or two extras at higher stages.
+    const foodCount = stage >= 5 ? 7 : stage >= 3 ? 6 : 5;
     for (let i = 0; i < foodCount; i++) {
       const pos = pickWalkable(false);
       if (!pos) continue;
@@ -4174,18 +4176,14 @@ class Game {
   }
 
   // ---------- Spawning ----------
-  // Initial foods placed at the start of a fresh game: 7 small (1-carrier)
-  // pieces fanned across the north hemisphere of the nest at two distances,
-  // so the player always has plenty of easy targets visible on screen.
+  // Initial foods placed at the start of a fresh game: 3 small (1-carrier)
+  // pieces fanned across the north hemisphere of the nest at close range,
+  // so the player has obvious nearby targets without clutter.
   spawnInitialFoods() {
     const placements = [
-      { angleFrac: 0.07, r: NEST_RADIUS_BASE + 95  },
-      { angleFrac: 0.22, r: NEST_RADIUS_BASE + 165 },
-      { angleFrac: 0.36, r: NEST_RADIUS_BASE + 105 },
-      { angleFrac: 0.50, r: NEST_RADIUS_BASE + 175 },
-      { angleFrac: 0.64, r: NEST_RADIUS_BASE + 105 },
-      { angleFrac: 0.78, r: NEST_RADIUS_BASE + 165 },
-      { angleFrac: 0.93, r: NEST_RADIUS_BASE + 95  }
+      { angleFrac: 0.20, r: NEST_RADIUS_BASE + 95  },
+      { angleFrac: 0.50, r: NEST_RADIUS_BASE + 110 },
+      { angleFrac: 0.80, r: NEST_RADIUS_BASE + 95  }
     ];
     for (const p of placements) {
       const a = Math.PI + p.angleFrac * Math.PI + rand(-0.08, 0.08);
