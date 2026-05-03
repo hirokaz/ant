@@ -216,7 +216,7 @@ const BIOME_UNLOCK_INFO = {
 };
 
 const MAX_ENEMIES = 4;
-const MAX_FOODS = 6;
+const MAX_FOODS = 9;
 
 // ---------- Utilities ----------
 function dist(a, b) {
@@ -267,8 +267,10 @@ class Ant {
     this.dead = false;
     this.wanderTarget = null;
     this.wanderTimer = 0;
-    this.color = isPlayer ? '#3a1f0a' : '#5a3416';
-    this.bodyHighlight = isPlayer ? '#6a3a18' : '#8a5a2c';
+    // Friend color shifted to a vivid rust so they stand out against mud /
+    // leaves / dark terrain (the old #5a3416 was almost identical to mud).
+    this.color = isPlayer ? '#3a1f0a' : '#a14418';
+    this.bodyHighlight = isPlayer ? '#6a3a18' : '#e07a30';
     this.callTimer = 0;  // for follow timeout
     this.helpTarget = null; // food they're going to help carry
   }
@@ -2724,6 +2726,14 @@ class Game {
 
     // Cinematic camera: zoom out, pan to the new zone, hold, then return.
     this.startCinematic(zone);
+
+    // Expansion arrow: a big "→ 🌍 NEW" pointer toward the new zone for ~5s,
+    // so the player knows which way to head when the cinematic ends.
+    this.expansionArrow = {
+      zoneCx: (zone.x0 + zone.x1) / 2,
+      zoneCy: (zone.y0 + zone.y1) / 2,
+      timer: 5000
+    };
   }
 
   startCinematic(zone) {
@@ -3060,7 +3070,10 @@ class Game {
     // Colony level + per-bonus tracking. Bonuses get re-applied on continue.
     this.colonyLevel = 0;
     this.nestLevel = 0;
-    this.maxCallSize = 12;
+    // One tap of "Call" brings up to this many NEW followers. Tapping again
+    // adds another batch (already-following ants only refresh their timer
+    // and don't consume the cap).
+    this.maxCallSize = 5;
     this.bonuses = {
       friendMaxHp: FRIEND_HP,
       friendAttack: FRIEND_ATTACK,
@@ -3896,16 +3909,18 @@ class Game {
   }
 
   // ---------- Spawning ----------
-  // Initial foods placed at the start of a fresh game: 5 small (1-carrier)
+  // Initial foods placed at the start of a fresh game: 7 small (1-carrier)
   // pieces fanned across the north hemisphere of the nest at two distances,
   // so the player always has plenty of easy targets visible on screen.
   spawnInitialFoods() {
     const placements = [
-      { angleFrac: 0.10, r: NEST_RADIUS_BASE + 90  },
-      { angleFrac: 0.30, r: NEST_RADIUS_BASE + 170 },
-      { angleFrac: 0.50, r: NEST_RADIUS_BASE + 100 },
-      { angleFrac: 0.70, r: NEST_RADIUS_BASE + 170 },
-      { angleFrac: 0.90, r: NEST_RADIUS_BASE + 90  }
+      { angleFrac: 0.07, r: NEST_RADIUS_BASE + 95  },
+      { angleFrac: 0.22, r: NEST_RADIUS_BASE + 165 },
+      { angleFrac: 0.36, r: NEST_RADIUS_BASE + 105 },
+      { angleFrac: 0.50, r: NEST_RADIUS_BASE + 175 },
+      { angleFrac: 0.64, r: NEST_RADIUS_BASE + 105 },
+      { angleFrac: 0.78, r: NEST_RADIUS_BASE + 165 },
+      { angleFrac: 0.93, r: NEST_RADIUS_BASE + 95  }
     ];
     for (const p of placements) {
       const a = Math.PI + p.angleFrac * Math.PI + rand(-0.08, 0.08);
@@ -3922,7 +3937,7 @@ class Game {
 
   spawnFood() {
     // Late-game allows more concurrent foods on the field.
-    const cap = MAX_FOODS + Math.min(8, Math.floor(this.friends.length / 100));
+    const cap = MAX_FOODS + Math.min(12, Math.floor(this.friends.length / 80));
     if (this.foods.filter(f => !f.deposited).length >= cap) return;
 
     // Per-terrain spawn weight & sampling. Higher = more likely to keep this candidate.
@@ -4508,11 +4523,12 @@ class Game {
     this.foodSpawnTimer -= dt * (this._eventFoodMul || 1);
     if (this.foodSpawnTimer <= 0) {
       this.spawnFood();
-      // Spawn an extra food at higher colony sizes to keep the pace.
-      if (this.friends.length >= 200 && Math.random() < 0.5) this.spawnFood();
-      const floor = this.friends.length >= 300 ? 2000 : this.friends.length >= 100 ? 2800 : 3500;
-      const baseInterval = Math.max(floor, 8000 - this.friends.length * 50);
-      this.foodSpawnTimer = baseInterval + rand(0, 3000);
+      // Often spawn a second food too — keeps the field comfortably stocked.
+      if (Math.random() < 0.45) this.spawnFood();
+      if (this.friends.length >= 200 && Math.random() < 0.6) this.spawnFood();
+      const floor = this.friends.length >= 300 ? 1500 : this.friends.length >= 100 ? 2200 : 2800;
+      const baseInterval = Math.max(floor, 6500 - this.friends.length * 50);
+      this.foodSpawnTimer = baseInterval + rand(0, 2200);
     }
     // Decay call-stress over ~5s after a call.
     if (this.callStress > 0) this.callStress = Math.max(0, this.callStress - dt / 5000);
@@ -4523,6 +4539,12 @@ class Game {
       if (this.combo.timerMs <= 0) { this.combo.count = 0; this.combo.timerMs = 0; }
     }
     if (this._comboBannerTimer > 0) this._comboBannerTimer -= dt;
+
+    // Expansion arrow lifetime
+    if (this.expansionArrow) {
+      this.expansionArrow.timer -= dt;
+      if (this.expansionArrow.timer <= 0) this.expansionArrow = null;
+    }
 
     // Enemy spawn timer ticks faster while call stress is active (raid pause kept normal).
     const stressMul = this.raidActive ? 1 : 1 + this.callStress;
@@ -5039,6 +5061,47 @@ class Game {
 
     // Optional: world bounds indicator
     ctx.restore();
+
+    // Expansion direction arrow — big golden "→ 🌍 NEW" for 5s after a new
+    // zone unlocks, so the player can find their way after the cinematic ends.
+    if (this.expansionArrow && this.expansionArrow.timer > 0 && this.gameState === 'playing') {
+      const ax = this.expansionArrow.zoneCx;
+      const ay = this.expansionArrow.zoneCy;
+      const sx = ax - this.camera.x;
+      const sy = ay - this.camera.y;
+      const cx = this.viewW / 2, cy = this.viewH / 2;
+      const dx = sx - cx, dy = sy - cy;
+      const a = Math.atan2(dy, dx);
+      const pad = 70;
+      const ex = clamp(cx + Math.cos(a) * 1000, pad, this.viewW - pad);
+      const ey = clamp(cy + Math.sin(a) * 1000, pad, this.viewH - pad);
+      const t = (this.time || 0) * 0.008;
+      const pulse = 0.7 + 0.3 * Math.sin(t);
+      ctx.save();
+      ctx.translate(ex, ey);
+      ctx.rotate(a);
+      ctx.fillStyle = `rgba(255, 215, 60, ${0.85 * pulse})`;
+      ctx.strokeStyle = 'rgba(80, 50, 0, 0.95)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(28, 0);
+      ctx.lineTo(-12, -18);
+      ctx.lineTo(-4, 0);
+      ctx.lineTo(-12, 18);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.rotate(-a);
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.lineWidth = 3;
+      ctx.font = 'bold 13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.strokeText('🌍 NEW', 0, 0);
+      ctx.fillText('🌍 NEW', 0, 0);
+      ctx.restore();
+    }
 
     // Raid warning arrow — points toward nearest raider when raid active
     if (this.player && this.gameState === 'playing' && this.raidActive && this.raidEnemies.length > 0) {
