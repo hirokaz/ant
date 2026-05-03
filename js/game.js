@@ -12,7 +12,6 @@ let WORLD_HEIGHT = 2000;
 let NEST_X = WORLD_WIDTH / 2;
 let NEST_Y = WORLD_HEIGHT - 220;
 const NEST_RADIUS_BASE = 120;
-const WORLD_EXPAND_AMOUNT = 240;
 const EGG_ROOM_RADIUS = 70;
 
 const PLAYER_SPEED = 2.6;
@@ -35,7 +34,19 @@ const ATTACK_COOLDOWN = 500;
 const FOOD_HATCH_TIME = 7000;
 
 const WIN_ANT_COUNT = 1000;
-const EXPANSION_THRESHOLD = 100;  // every N allies a new biome unlocks
+const EXPANSION_THRESHOLD = 50;        // every N allies a new biome unlocks
+const MAX_EXPANSION_STAGE = 19;        // 1000/50 - 1 (final stage = win)
+const WORLD_EXPAND_AMOUNT = 350;       // ≈25% of initial 1400 width
+// Order in which biome regions appear. After the 6th unlock the cycle repeats.
+const BIOME_SEQUENCE = ['mud', 'pond', 'flower', 'leaves', 'sand', 'concrete'];
+const BIOME_UNLOCK_INFO = {
+  mud:      { name: '🟫 泥',       intro: '体力じわじわ減・カブトムシ出現' },
+  pond:     { name: '🟦 池',       intro: '大幅減速&HP減少・ハチ出現' },
+  flower:   { name: '🌸 花畑',     intro: '餌が豊富&HP微回復' },
+  leaves:   { name: '🍂 落ち葉',   intro: 'クモが多く隠れる' },
+  sand:     { name: '🟨 砂',       intro: '歩きづらい' },
+  concrete: { name: '⬜ コンクリ', intro: '強敵&大型餌 (人の落とし物)' }
+};
 
 const MAX_ENEMIES = 4;
 const MAX_FOODS = 6;
@@ -1712,6 +1723,50 @@ class TerrainGrid {
     }
   }
 
+  // Fill a region with a single biome type at `coverage` density (default 0.8).
+  // The remaining ~20% is left/punched as grass clearings for visual interest.
+  fillBiome(bounds, type, coverage = 0.8) {
+    const tx0 = Math.max(0, Math.floor(bounds.x0 / this.tileSize));
+    const ty0 = Math.max(0, Math.floor(bounds.y0 / this.tileSize));
+    const tx1 = Math.min(this.cols, Math.ceil(bounds.x1 / this.tileSize));
+    const ty1 = Math.min(this.rows, Math.ceil(bounds.y1 / this.tileSize));
+    const nestSafeR = (NEST_RADIUS_BASE + 60) / this.tileSize;
+    const nestTx = NEST_X / this.tileSize;
+    const nestTy = NEST_Y / this.tileSize;
+    const inSafe = (c, r) => Math.hypot(c - nestTx, r - nestTy) < nestSafeR;
+
+    // Step 1: paint the entire region with the biome type.
+    for (let r = ty0; r < ty1; r++) {
+      for (let c = tx0; c < tx1; c++) {
+        if (inSafe(c, r)) continue;
+        this.tiles[r][c] = type;
+      }
+    }
+
+    // Step 2: punch grass clearings to reach the target coverage.
+    const w = tx1 - tx0;
+    const h = ty1 - ty0;
+    const totalTiles = w * h;
+    const grassTiles = totalTiles * (1 - coverage);
+    const numClearings = Math.max(2, Math.round(grassTiles / 8));
+    for (let i = 0; i < numClearings; i++) {
+      const cx = Math.floor(rand(tx0, tx1));
+      const cy = Math.floor(rand(ty0, ty1));
+      if (inSafe(cx, cy)) continue;
+      const radius = Math.floor(rand(1, 3));
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const yy = cy + dy;
+          const xx = cx + dx;
+          if (yy < ty0 || yy >= ty1 || xx < tx0 || xx >= tx1) continue;
+          const noisy = radius + (((xx * 1973 + yy * 9277) % 100) / 100 - 0.5) * 1.4;
+          const d = Math.hypot(dx, dy);
+          if (d <= noisy) this.tiles[yy][xx] = 'grass';
+        }
+      }
+    }
+  }
+
   // Regenerate terrain inside the world rectangle bounds = {x0,y0,x1,y1}.
   // Patches are centered roughly inside bounds. Skips area near nest center.
   regenerate(bounds, opts = {}) {
@@ -2022,6 +2077,7 @@ class Game {
     this.raidTimer = 90000;  // first raid possible after ~90s
     this.raidActive = false;
     this.raidEnemies = [];
+    this.unlockedBiomes = new Set();
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -2066,50 +2122,63 @@ class Game {
     }
   }
 
-  // Field expansion — extends the world east and reveals new biomes.
+  // Field expansion — appends a new biome region east of the current world.
+  // Each expansion adds ~25% of the initial playable area, dedicated to one
+  // biome type drawn from BIOME_SEQUENCE (cycling for later stages).
   expandWorld() {
     const oldWidth = WORLD_WIDTH;
     const newWidth = WORLD_WIDTH + WORLD_EXPAND_AMOUNT;
     WORLD_WIDTH = newWidth;
     this.expansionStage++;
 
-    // Extend terrain grid and regenerate the new strip with biome weights that
-    // get more varied/dangerous as we go deeper.
+    const biomeType = BIOME_SEQUENCE[(this.expansionStage - 1) % BIOME_SEQUENCE.length];
+    const isFirstUnlock = !this.unlockedBiomes.has(biomeType);
+    this.unlockedBiomes.add(biomeType);
+
+    // Extend the terrain grid and fill the new east strip with this biome
+    // (≈80% biome, ≈20% grass clearings).
     if (this.terrain) {
       this.terrain.extend(newWidth, WORLD_HEIGHT);
-      // Stage 1-2: gentle (sand/leaves), Stage 3-5: mud/flowers/pond, Stage 6+: concrete
-      let weights;
-      if (this.expansionStage <= 2) {
-        weights = { sand: 3, leaves: 4, mud: 1, flower: 2, pond: 1, concrete: 1 };
-      } else if (this.expansionStage <= 5) {
-        weights = { sand: 2, leaves: 2, mud: 4, flower: 3, pond: 2, concrete: 1 };
-      } else {
-        weights = { sand: 1, leaves: 2, mud: 3, flower: 2, pond: 2, concrete: 4 };
-      }
-      this.terrain.regenerate({
-        x0: oldWidth - 40, y0: 40,
-        x1: newWidth - 40,
+      this.terrain.fillBiome({
+        x0: oldWidth - 10, y0: 40,
+        x1: newWidth - 10,
         y1: NEST_Y - NEST_RADIUS_BASE - 40
-      }, { weights });
+      }, biomeType, 0.8);
     }
 
-    // Add grass tufts in the new strip
+    // Add grass tufts in the new strip (skip dense biome cells visually).
     for (let i = 0; i < 12; i++) {
       const x = rand(oldWidth + 20, newWidth - 40);
       const y = rand(40, NEST_Y - NEST_RADIUS_BASE - 40);
       this.grassTufts.push(new GrassTuft(x, y, rand(0.7, 1.2)));
     }
 
-    // Visual feedback
+    // Visual feedback + 2-line announcement: headline + biome-specific detail.
     this.shakeTimer = 600;
     this.shakeMag = 6;
-    this.showMessage(`🌍 ステージ ${this.expansionStage} 解放！ 新しい地形が現れた！`, 'success', 3000);
+    const info = BIOME_UNLOCK_INFO[biomeType];
+    const headline = isFirstUnlock
+      ? '✨ 新しいエリアが追加されました！'
+      : '🌍 エリアが広がった！';
+    this.showMessage(headline, 'success', 3500);
+    const detail = info
+      ? (isFirstUnlock ? `${info.name}エリア: ${info.intro}` : `${info.name}エリアが拡張されました`)
+      : `🌍 ステージ ${this.expansionStage}`;
+    setTimeout(() => {
+      if (this.gameState === 'playing') this.showMessage(detail, 'success', 3000);
+    }, 700);
+
     // Sparkle particles along the new edge
     for (let i = 0; i < 24; i++) {
       const x = rand(oldWidth - 10, newWidth);
       const y = rand(40, NEST_Y - NEST_RADIUS_BASE - 40);
       this.particles.push(new Particle(x, y, rand(-0.5, 0.5), rand(-1.5, -0.5), rand(800, 1400), '#ffe680', rand(2, 3)));
     }
+
+    // Welcome gift: drop a heart in the new region as a small reward.
+    const giftX = oldWidth + WORLD_EXPAND_AMOUNT / 2;
+    const giftY = clamp(NEST_Y - NEST_RADIUS_BASE - 100, 80, NEST_Y - NEST_RADIUS_BASE - 60);
+    this.healItems.push(new HealItem(giftX, giftY));
   }
 
   // Begin a nest raid — a coordinated attack heading straight for the nest.
@@ -2143,12 +2212,16 @@ class Game {
     this.raidActive = true;
     this.shakeTimer = 700;
     this.shakeMag = 4;
+    this.raidWarningGiven = false;
+    this.raidImminent = false;
     this.showMessage(`⚠️ 巣に敵が来る！ (${count}体)`, 'warn', 3500);
   }
 
   endRaid(success) {
     this.raidActive = false;
     this.raidEnemies = [];
+    this.raidWarningGiven = false;
+    this.raidImminent = false;
     if (success) {
       this.showMessage('🛡️ 巣を守った！ 回復アイテムが現れた！', 'success', 3000);
       // Spawn a heart bonus near the nest
@@ -2213,13 +2286,12 @@ class Game {
     this.raidTimer = 90000;
     this.raidActive = false;
     this.raidEnemies = [];
-    // Generate terrain (initial outdoor area only — north of nest)
+    this.raidWarningGiven = false;
+    this.raidImminent = false;
+    // Set of biome types unlocked so far (drives enemy/food unlock gates).
+    this.unlockedBiomes = new Set();
+    // Initial terrain: pure grass. New biomes appear east as the colony grows.
     this.terrain = new TerrainGrid(WORLD_WIDTH, WORLD_HEIGHT);
-    this.terrain.regenerate({
-      x0: 40, y0: 40,
-      x1: WORLD_WIDTH - 40,
-      y1: NEST_Y - NEST_RADIUS_BASE - 40
-    });
     // Regenerate grass for the (reset) initial world
     this.generateGrass();
     // Initial food
@@ -2552,40 +2624,46 @@ class Game {
       x = bestX; y = bestY; terrainHere = bestTerrain;
     }
 
-    // Progressive variety based on colony size (existing curve, slightly extended for 1000 cap)
-    const totalAnts = 1 + this.friends.filter(f => !f.dead).length;
+    // Food types unlock with biome stages:
+    //   stage 0  → small / medium
+    //   stage 1+ → + large    (mud unlocked, 50 friends)
+    //   stage 2+ → + huge     (pond unlocked, 100 friends)
+    //   stage 3+ → + giant    (flower unlocked, 150 friends)
+    const stage = this.expansionStage;
     let type;
     const r = Math.random();
-    if (totalAnts < 4) {
-      type = r < 0.85 ? 'small' : 'medium';
-    } else if (totalAnts < 10) {
+    if (stage < 1) {
+      type = r < 0.80 ? 'small' : 'medium';
+    } else if (stage < 2) {
       type = r < 0.55 ? 'small' : r < 0.90 ? 'medium' : 'large';
-    } else if (totalAnts < 20) {
+    } else if (stage < 3) {
       type = r < 0.35 ? 'small' : r < 0.70 ? 'medium' : r < 0.92 ? 'large' : 'huge';
-    } else if (totalAnts < 40) {
+    } else if (stage < 5) {
       type = r < 0.25 ? 'small' : r < 0.50 ? 'medium' : r < 0.75 ? 'large' : r < 0.93 ? 'huge' : 'giant';
     } else {
       type = r < 0.18 ? 'small' : r < 0.38 ? 'medium' : r < 0.62 ? 'large' : r < 0.85 ? 'huge' : 'giant';
     }
 
-    // Terrain bias: shift type distribution
+    // Terrain bias: shift type distribution. Skip biases that would pick a
+    // not-yet-unlocked food type.
+    const canHuge  = stage >= 2;
+    const canGiant = stage >= 3;
     if (terrainHere === 'sand') {
-      // skew small/medium
       if (type === 'large' || type === 'huge' || type === 'giant') {
         if (Math.random() < 0.5) type = 'medium';
       }
     } else if (terrainHere === 'mud') {
-      // mostly small
       if (Math.random() < 0.5) type = 'small';
     } else if (terrainHere === 'flower') {
-      // boost to medium/large
       if (type === 'small' && Math.random() < 0.6) type = 'medium';
-      else if (type === 'medium' && Math.random() < 0.3) type = 'large';
+      else if (type === 'medium' && stage >= 1 && Math.random() < 0.3) type = 'large';
     } else if (terrainHere === 'leaves') {
       if (type === 'small' && Math.random() < 0.4) type = 'medium';
     } else if (terrainHere === 'concrete') {
-      // human leftovers — occasional huge/giant
-      if (totalAnts >= 10 && Math.random() < 0.25) type = Math.random() < 0.5 ? 'huge' : 'giant';
+      if (Math.random() < 0.25) {
+        if (canGiant) type = Math.random() < 0.5 ? 'huge' : 'giant';
+        else if (canHuge) type = 'huge';
+      }
     }
 
     this.foods.push(new Food(x, y, type));
@@ -2635,24 +2713,34 @@ class Game {
     }
 
     const cfg = ENEMY_TERRAIN[terrainHere] || ENEMY_TERRAIN.grass;
-    const totalAnts = 1 + this.friends.filter(f => !f.dead).length;
 
-    // Progressive variety unlocking
+    // Type unlocks are tied to biome unlocks: beetle on mud, wasp on pond.
+    const hasMud = this.unlockedBiomes.has('mud');
+    const hasPond = this.unlockedBiomes.has('pond');
     const r = Math.random();
     let type;
-    if (totalAnts < 6) {
+    if (!hasMud && !hasPond) {
       type = 'spider';
-    } else if (totalAnts < 15) {
-      type = r < 0.65 ? 'spider' : r < 0.90 ? 'wasp' : 'beetle';
-    } else if (totalAnts < 30) {
-      type = r < 0.45 ? 'spider' : r < 0.75 ? 'wasp' : 'beetle';
+    } else if (hasMud && !hasPond) {
+      type = r < 0.65 ? 'spider' : 'beetle';
+    } else if (!hasMud && hasPond) {
+      type = r < 0.65 ? 'spider' : 'wasp';
     } else {
-      type = r < 0.35 ? 'spider' : r < 0.65 ? 'wasp' : 'beetle';
+      // Both unlocked — full variety. Proportions weighted by stage depth.
+      if (this.expansionStage < 6) {
+        type = r < 0.45 ? 'spider' : r < 0.75 ? 'wasp' : 'beetle';
+      } else {
+        type = r < 0.35 ? 'spider' : r < 0.65 ? 'wasp' : 'beetle';
+      }
     }
 
-    // Apply terrain bias: 50% chance to swap to biased type if unlocked
-    if (cfg.bias && totalAnts >= 6 && Math.random() < 0.5) {
-      type = cfg.bias;
+    // Apply terrain bias only if the biased type is actually unlocked.
+    if (cfg.bias && Math.random() < 0.5) {
+      const biasOK =
+        cfg.bias === 'spider' ||
+        (cfg.bias === 'beetle' && hasMud) ||
+        (cfg.bias === 'wasp'   && hasPond);
+      if (biasOK) type = cfg.bias;
     }
 
     this.enemies.push(new Enemy(x, y, type, cfg.scale));
@@ -2915,11 +3003,25 @@ class Game {
     // Raid logic
     if (!this.raidActive) {
       this.raidTimer -= dt;
+      // Pre-raid warning: heads-up ~8s before, second alarm ~3s before.
+      const aliveFriends = this.friends.filter(f => !f.dead).length;
+      if (aliveFriends >= 10) {
+        if (!this.raidWarningGiven && this.raidTimer < 8000 && this.raidTimer > 0) {
+          this.showMessage('⚠️ 敵の気配が近づいてくる…巣に戻る準備を！', 'warn', 4000);
+          this.raidWarningGiven = true;
+        }
+        if (!this.raidImminent && this.raidTimer < 3000 && this.raidTimer > 0) {
+          this.showMessage('⚠️ もうすぐ襲撃!', 'warn', 2500);
+          this.raidImminent = true;
+        }
+      }
       if (this.raidTimer <= 0) {
         this.startRaid();
         if (!this.raidActive) {
           // Failed precondition — try again later
           this.raidTimer = rand(40000, 60000);
+          this.raidWarningGiven = false;
+          this.raidImminent = false;
         }
       }
     } else {
@@ -2946,8 +3048,8 @@ class Game {
     hpFill.className = hpRatio > 0.6 ? 'high' : hpRatio > 0.3 ? 'medium' : '';
 
     // Field expansion check (every EXPANSION_THRESHOLD friends)
-    const expectedStage = Math.min(9, Math.floor(total / EXPANSION_THRESHOLD));
-    if (expectedStage > this.expansionStage && total < WIN_ANT_COUNT) {
+    const expectedStage = Math.min(MAX_EXPANSION_STAGE, Math.floor(total / EXPANSION_THRESHOLD));
+    while (expectedStage > this.expansionStage && total < WIN_ANT_COUNT) {
       this.expandWorld();
     }
 
@@ -3001,13 +3103,62 @@ class Game {
     // Draw heal items
     this.healItems.forEach(h => h.draw(ctx));
 
-    // Draw all ants and enemies sorted by Y
+    // Draw ants and enemies sorted by Y. Visually compact "idle in nest" ants
+    // when the colony grows large: only render the first NEST_VISIBLE_CAP
+    // wandering inside the nest; the rest are summarised with a "+N匹" badge
+    // drawn over the egg room.
+    const NEST_VISIBLE_CAP = 18;
     const drawables = [];
     if (this.player) drawables.push(this.player);
-    this.friends.forEach(f => drawables.push(f));
     this.enemies.forEach(e => drawables.push(e));
+
+    let nestIdleVisible = 0;
+    let nestIdleHidden = 0;
+    for (const f of this.friends) {
+      if (f.dead) continue;
+      const idleInNest = (f.state === 'idle' && inNest(f.x, f.y));
+      if (idleInNest) {
+        if (nestIdleVisible < NEST_VISIBLE_CAP) {
+          drawables.push(f);
+          nestIdleVisible++;
+        } else {
+          nestIdleHidden++;
+        }
+      } else {
+        drawables.push(f);
+      }
+    }
+    this._nestIdleHidden = nestIdleHidden;
+
     drawables.sort((a, b) => a.y - b.y);
     drawables.forEach(d => d.draw(ctx));
+
+    // "+N匹" badge inside the nest when many idle ants are hidden
+    if (nestIdleHidden > 0) {
+      const bx = NEST_X;
+      const by = NEST_Y - EGG_ROOM_RADIUS - 14;
+      const text = `🐜 +${nestIdleHidden}`;
+      ctx.save();
+      ctx.font = 'bold 13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const metrics = ctx.measureText(text);
+      const padX = 8;
+      const padY = 4;
+      const boxW = metrics.width + padX * 2;
+      const boxH = 18;
+      ctx.fillStyle = 'rgba(20, 12, 6, 0.78)';
+      if (ctx.roundRect) {
+        ctx.beginPath();
+        ctx.roundRect(bx - boxW / 2, by - boxH / 2, boxW, boxH, 8);
+        ctx.fill();
+      } else {
+        ctx.fillRect(bx - boxW / 2, by - boxH / 2, boxW, boxH);
+      }
+      ctx.fillStyle = '#ffe0a0';
+      ctx.fillText(text, bx, by);
+      ctx.restore();
+    }
 
     // Draw carried foods (above ants — visible on top of carriers)
     this.foods.forEach(f => { if (f.beingCarried) f.draw(ctx); });
