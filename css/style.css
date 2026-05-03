@@ -478,6 +478,20 @@ html, body {
   transform: scale(0.95);
 }
 
+#statsDisplay {
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 10px;
+  font-size: 12px;
+  text-align: left;
+  color: #ffe6c1;
+  line-height: 1.6;
+}
+#statsDisplay.hidden { display: none; }
+#statsDisplay h4 { font-size: 13px; color: #ffd700; margin-bottom: 6px; }
+#statsDisplay .stat-row { display: flex; justify-content: space-between; }
+
 #respawnText {
   font-size: 60px;
   font-weight: bold;

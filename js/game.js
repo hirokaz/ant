@@ -47,6 +47,36 @@ const MAX_EXPANSION_STAGE = 19;        // 1000/50 - 1 (final stage = win)
 const WORLD_EXPAND_AMOUNT = 350;       // ≈25% of initial 1400 width
 // Order in which biome regions appear. After the 6th unlock the cycle repeats.
 const BIOME_SEQUENCE = ['mud', 'pond', 'flower', 'leaves', 'sand', 'concrete'];
+// Colony levels — passive bonuses unlocked as the colony grows.
+// Each entry's `apply` mutates Game state. Levels are applied once, in order.
+const COLONY_LEVELS = [
+  { lv: 1, friends: 10,  label: 'プレイヤー HP +10',
+    apply: (g) => { g.player.maxHp += 10; g.player.hp = g.player.maxHp; } },
+  { lv: 2, friends: 25,  label: '仲間の攻撃力 +1',
+    apply: (g) => {
+      g.bonuses.friendAttack += 1;
+      g.friends.forEach(f => { if (!f.dead) f.attackPower = g.bonuses.friendAttack; });
+    } },
+  { lv: 3, friends: 50,  label: '餌の運搬速度 +10%',
+    apply: (g) => { g.bonuses.carrySpeedMul *= 1.10; } },
+  { lv: 4, friends: 100, label: 'プレイヤー HP +20',
+    apply: (g) => { g.player.maxHp += 20; g.player.hp = g.player.maxHp; } },
+  { lv: 5, friends: 200, label: '仲間 HP +20',
+    apply: (g) => {
+      g.bonuses.friendMaxHp += 20;
+      g.friends.forEach(f => { if (!f.dead) { f.maxHp = g.bonuses.friendMaxHp; f.hp = f.maxHp; } });
+    } },
+  { lv: 6, friends: 350, label: '卵の孵化時間 -20%',
+    apply: (g) => { g.bonuses.hatchTimeMul *= 0.80; } },
+  { lv: 7, friends: 500, label: '仲間の攻撃力 +2',
+    apply: (g) => {
+      g.bonuses.friendAttack += 2;
+      g.friends.forEach(f => { if (!f.dead) f.attackPower = g.bonuses.friendAttack; });
+    } },
+  { lv: 8, friends: 750, label: 'プレイヤー攻撃力 +3',
+    apply: (g) => { g.player.attackPower += 3; } }
+];
+
 const BIOME_UNLOCK_INFO = {
   mud:      { name: '🟫 泥',       intro: '体力じわじわ減・カブトムシ出現' },
   pond:     { name: '🟦 池',       intro: '大幅減速&HP減少・ハチ出現' },
@@ -178,7 +208,8 @@ class Ant {
   }
 
   updatePlayer(dt, game) {
-    const input = game.input;
+    // Player input is suspended during cinematic camera sequences.
+    const input = game.cinematic ? { moving: false, moveX: 0, moveY: 0 } : game.input;
     let moving = false;
     let speed = this.speed;
 
@@ -189,6 +220,7 @@ class Ant {
       if (required >= 5) speed *= 0.40;
       else if (required >= 3) speed *= 0.55;
       else speed *= 0.85;
+      if (game.bonuses && game.bonuses.carrySpeedMul) speed *= game.bonuses.carrySpeedMul;
     }
 
     // Apply terrain slowdown
@@ -227,7 +259,8 @@ class Ant {
       if (food.carriers[0] === this) {
         const req = food.required;
         const slow = req >= 8 ? 0.40 : req >= 5 ? 0.50 : req >= 3 ? 0.60 : 0.85;
-        this.moveToward({ x: NEST_X, y: NEST_Y }, this.speed * slow, game);
+        const bonus = (game.bonuses && game.bonuses.carrySpeedMul) || 1;
+        this.moveToward({ x: NEST_X, y: NEST_Y }, this.speed * slow * bonus, game);
       }
       this._moving = true;
       return;
@@ -596,10 +629,14 @@ class Food {
     this.carriers = [];
     // Spawn eggs (with risk-reward bonus from harsh terrain)
     const eggsToSpawn = Math.max(1, Math.round(this.eggs * (this.eggBonus || 1)));
+    const hatchMul = (game.bonuses && game.bonuses.hatchTimeMul) || 1;
     for (let i = 0; i < eggsToSpawn; i++) {
       const a = Math.random() * Math.PI * 2;
       const r = Math.random() * (EGG_ROOM_RADIUS - 15);
-      game.eggs.push(new Egg(NEST_X + Math.cos(a) * r, NEST_Y + Math.sin(a) * r));
+      const eg = new Egg(NEST_X + Math.cos(a) * r, NEST_Y + Math.sin(a) * r);
+      eg.timer *= hatchMul;
+      eg.maxTimer = eg.timer;
+      game.eggs.push(eg);
     }
     game.spawnDepositEffect(this.x, this.y);
     const bonusTxt = (this.eggBonus && this.eggBonus > 1.0)
@@ -607,6 +644,7 @@ class Food {
       : '';
     game.showMessage(`巣に運んだ！ 卵 +${eggsToSpawn}${bonusTxt}`, 'success');
     if (game._advanceTutorial) game._advanceTutorial('deposit');
+    if (game._statBump) game._statBump('deposits');
     if (game.saveGame) game.saveGame();
   }
 
@@ -2278,7 +2316,8 @@ class Game {
     this.damageNumbers = [];
     this.grassTufts = [];
     this.terrain = null;
-    this.camera = { x: 0, y: 0 };
+    this.camera = { x: 0, y: 0, cx: 0, cy: 0, scale: 1 };
+    this.cinematic = null;
     this.viewW = 0;
     this.viewH = 0;
     this.dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -2404,6 +2443,38 @@ class Game {
 
     // Persist after a major milestone.
     this.saveGame();
+
+    // Cinematic camera: zoom out, pan to the new zone, hold, then return.
+    this.startCinematic(zone);
+  }
+
+  startCinematic(zone) {
+    const playerCx = this.player.x;
+    const playerCy = this.player.y;
+    const zoneCx   = (zone.x0 + zone.x1) / 2;
+    const zoneCy   = (zone.y0 + zone.y1) / 2;
+    const zoomOut  = 0.65;
+    this.cinematic = {
+      t: 0,
+      segments: [
+        // 1. Zoom out at player, ~400ms
+        { from: { cx: playerCx, cy: playerCy, scale: 1 },
+          to:   { cx: playerCx, cy: playerCy, scale: zoomOut },
+          duration: 400 },
+        // 2. Pan to new zone, ~1200ms
+        { from: { cx: playerCx, cy: playerCy, scale: zoomOut },
+          to:   { cx: zoneCx,   cy: zoneCy,   scale: zoomOut },
+          duration: 1200 },
+        // 3. Hold on the new zone, ~600ms
+        { from: { cx: zoneCx, cy: zoneCy, scale: zoomOut },
+          to:   { cx: zoneCx, cy: zoneCy, scale: zoomOut },
+          duration: 600 },
+        // 4. Pan back + zoom in, ~500ms
+        { from: { cx: zoneCx,   cy: zoneCy,   scale: zoomOut },
+          to:   { cx: playerCx, cy: playerCy, scale: 1 },
+          duration: 500 }
+      ]
+    };
   }
 
   // Pick a position for the next zone: a ZONE_SIZE square attached to one of
@@ -2578,6 +2649,7 @@ class Game {
     this.raidArrived = false;
     this.raidPenaltyApplied = false;
     if (success) {
+      this._statBump('raidsWon');
       this.showMessage('🛡️ 巣を守った！ 回復アイテムが現れた！', 'success', 3000);
       // Spawn a heart bonus near the nest
       let x, y, attempts = 0;
@@ -2600,6 +2672,7 @@ class Game {
     const alive = this.friends.filter(f => !f.dead);
     const toKill = Math.min(alive.length, Math.floor(alive.length * fraction));
     if (toKill <= 0) return;
+    this._statBump('raidsFailed');
     // Shuffle to pick random victims
     for (let i = alive.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -2685,6 +2758,14 @@ class Game {
     this.raidPenaltyApplied = false;
     // Call-window suspense: rises to 1.0 when calling friends, decays to 0 over ~5s.
     this.callStress = 0;
+    // Colony level + per-bonus tracking. Bonuses get re-applied on continue.
+    this.colonyLevel = 0;
+    this.bonuses = {
+      friendMaxHp: FRIEND_HP,
+      friendAttack: FRIEND_ATTACK,
+      carrySpeedMul: 1.0,
+      hatchTimeMul: 1.0
+    };
     // Set of biome types unlocked so far (drives enemy/food unlock gates).
     this.unlockedBiomes = new Set();
     // Zones: list of accessible rectangles. The first zone is the initial
@@ -2707,6 +2788,13 @@ class Game {
     if (saveData) {
       this.expansionStage = saveData.expansionStage || 0;
       this.unlockedBiomes = new Set(saveData.unlockedBiomes || []);
+      // Replay colony-level applies up to saved level (mutates player + bonuses).
+      const savedLv = saveData.colonyLevel || 0;
+      for (const def of COLONY_LEVELS) {
+        if (def.lv > savedLv) break;
+        this.colonyLevel = def.lv;
+        def.apply(this);
+      }
       // Re-stamp each saved non-initial zone (initial zone is already stamped).
       for (const sz of saveData.zones || []) {
         const isInitial = sz.x0 === initialZone.x0 && sz.y0 === initialZone.y0
@@ -2740,6 +2828,16 @@ class Game {
       this.firstHealSeen = false;
     }
 
+    // Local-only analytics. No network. Stored alongside the save in
+    // localStorage so we can show "your record so far" on the start screen
+    // and visualize where the difficulty bites.
+    if (saveData && saveData.stats) {
+      this.stats = Object.assign(this._freshStats(), saveData.stats);
+    } else {
+      this.stats = this._freshStats();
+    }
+    this.stats.runStart = performance.now();
+
     // Tutorial: 3 short steps for first-time players. Saved players skip it.
     let tutorialDone = false;
     try { tutorialDone = localStorage.getItem('ant_tutorial_done') === 'true'; } catch (_) {}
@@ -2747,8 +2845,12 @@ class Game {
     this._updateTutorialHint();
 
     // Snap the camera so the first frame doesn't pan from (0,0).
+    this.camera.scale = 1;
+    this.camera.cx = this.player.x;
+    this.camera.cy = this.player.y;
     this.camera.x = clamp(this.player.x - this.viewW / 2, 0, WORLD_WIDTH - this.viewW);
     this.camera.y = clamp(this.player.y - this.viewH / 2, 0, WORLD_HEIGHT - this.viewH);
+    this.cinematic = null;
     // Regenerate grass for the (reset) initial world
     this.generateGrass();
     // Initial food (always present so the player can immediately act)
@@ -2900,6 +3002,8 @@ class Game {
         this.startGame(existing);
       });
     }
+    // Show "your record so far" panel if any stats exist.
+    this._renderStatsPanel();
     startBtn.addEventListener('click', () => {
       // Starting fresh — drop the previous save (if any).
       this.clearSave();
@@ -2911,6 +3015,53 @@ class Game {
       document.getElementById('winScreen').classList.add('hidden');
       this.startGame();
     });
+  }
+
+  _renderStatsPanel() {
+    const panel = document.getElementById('statsDisplay');
+    if (!panel) return;
+    const s = this._loadStatsOnly();
+    if (!s) { panel.classList.add('hidden'); return; }
+    const fmt = (ms) => {
+      if (!ms) return '—';
+      const sec = Math.floor(ms / 1000);
+      const m = Math.floor(sec / 60), r = sec % 60;
+      return `${m}分${String(r).padStart(2, '0')}秒`;
+    };
+    panel.classList.remove('hidden');
+    panel.innerHTML = `
+      <h4>📊 これまでの記録</h4>
+      <div class="stat-row"><span>累計プレイ時間</span><span>${fmt(s.playTimeMs)}</span></div>
+      <div class="stat-row"><span>累計撃破</span><span>${s.kills || 0}</span></div>
+      <div class="stat-row"><span>累計運搬</span><span>${s.deposits || 0}</span></div>
+      <div class="stat-row"><span>レイド撃退</span><span>${s.raidsWon || 0} / ${(s.raidsWon || 0) + (s.raidsFailed || 0)}</span></div>
+      <div class="stat-row"><span>死亡回数</span><span>${s.deaths || 0}</span></div>
+      <div class="stat-row"><span>🏆 自己ベスト</span><span>${fmt(s.bestClearMs)}</span></div>
+    `;
+  }
+
+  // ---------- Stats / Analytics (local only) ----------
+  _freshStats() {
+    return {
+      playTimeMs: 0,
+      kills: 0,
+      deposits: 0,
+      raidsWon: 0,
+      raidsFailed: 0,
+      deaths: 0,
+      milestones: {},  // { 100: timestampMs, 200: ... }
+      bestClearMs: null
+    };
+  }
+  _statBump(key, n = 1) {
+    if (!this.stats) return;
+    this.stats[key] = (this.stats[key] || 0) + n;
+  }
+  _statMilestone(level) {
+    if (!this.stats) return;
+    if (!this.stats.milestones[level]) {
+      this.stats.milestones[level] = Math.round(performance.now() - this.stats.runStart);
+    }
   }
 
   // ---------- Tutorial ----------
@@ -2963,10 +3114,32 @@ class Game {
         unlockedBiomes: [...this.unlockedBiomes],
         zones: this.zones.map(z => ({ x0: z.x0, y0: z.y0, x1: z.x1, y1: z.y1, biome: z.biome })),
         playerHp: Math.round(this.player.hp),
-        time: Date.now()
+        colonyLevel: this.colonyLevel,
+        time: Date.now(),
+        stats: this.stats ? this._statsForSave() : null
       };
       localStorage.setItem('ant_save', JSON.stringify(save));
+      this._persistStatsOnly();
     } catch (_) { /* private mode etc — fail silently */ }
+  }
+  _statsForSave() {
+    // Drop the runtime-only field
+    const s = Object.assign({}, this.stats);
+    delete s.runStart;
+    return s;
+  }
+  _persistStatsOnly() {
+    try {
+      if (!this.stats) return;
+      localStorage.setItem('ant_stats', JSON.stringify(this._statsForSave()));
+    } catch (_) {}
+  }
+  _loadStatsOnly() {
+    try {
+      const raw = localStorage.getItem('ant_stats');
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (_) { return null; }
   }
   loadSave() {
     try {
@@ -3001,8 +3174,12 @@ class Game {
     });
 
     if (closest) {
+      const wasAlive = !closest.dead;
       closest.takeDamage(this.player.attackPower, this, this.player);
-      if (closest.dead) this._advanceTutorial('kill');
+      if (wasAlive && closest.dead) {
+        this._advanceTutorial('kill');
+        this._statBump('kills');
+      }
       this.spawnHitEffect(closest.x, closest.y);
       // Mark player as 'attacking-active' so friends join
       this.player.state = 'attacking-active';
@@ -3499,6 +3676,7 @@ class Game {
       }
       this.gameState = 'dead';
       this.respawnTimer = 3000;
+      this._statBump('deaths');
       document.getElementById('deathScreen').classList.remove('hidden');
     } else {
       // Friend died — drop food if any
@@ -3575,10 +3753,29 @@ class Game {
     // Update terrain animations (water ripples etc)
     if (this.terrain) this.terrain.tickAnim(dt);
 
-    // Update entities
+    // Update entities. LOD: idle ants wandering in the nest while off-screen
+    // get their update skipped — they aren't doing anything player-visible
+    // and skipping ~hundreds of them per frame keeps late-game smooth.
     this.player.update(dt, this);
-    this.friends.forEach(f => f.update(dt, this));
-    this.enemies.forEach(e => e.update(dt, this));
+    const lodLeft   = this.camera.x - 80;
+    const lodTop    = this.camera.y - 80;
+    const lodRight  = this.camera.x + this.viewW + 80;
+    const lodBottom = this.camera.y + this.viewH + 80;
+    const offscreen = (e) =>
+      e.x < lodLeft || e.x > lodRight || e.y < lodTop || e.y > lodBottom;
+    this.friends.forEach(f => {
+      if (f.dead) return;
+      // Skip: idle in nest off-screen — only need its position to be correct.
+      if (f.state === 'idle' && inNest(f.x, f.y) && offscreen(f)) return;
+      f.update(dt, this);
+    });
+    this.enemies.forEach(e => {
+      if (e.dead) return;
+      // Skip enemies that have no target and are off-screen and far from any
+      // friend/player (no one can see or be hit by them yet).
+      if (!e.target && offscreen(e) && dist(e, this.player) > 300) return;
+      e.update(dt, this);
+    });
     this.foods.forEach(f => f.update(dt, this));
     this.eggs.forEach(eg => eg.update(dt));
     this.healItems.forEach(h => h.update(dt));
@@ -3634,8 +3831,11 @@ class Game {
     this.eggs = this.eggs.filter(eg => {
       if (eg.dead) return false;
       if (eg.hatched) {
-        // Hatch into friend ant
+        // Hatch into friend ant — apply current colony bonuses to its stats.
         const newAnt = new Ant(eg.x, eg.y, false);
+        newAnt.maxHp = this.bonuses.friendMaxHp;
+        newAnt.hp = newAnt.maxHp;
+        newAnt.attackPower = this.bonuses.friendAttack;
         newAnt.state = 'idle';
         this.friends.push(newAnt);
         this.spawnHatchEffect(eg.x, eg.y);
@@ -3774,16 +3974,45 @@ class Game {
       this.saveGame();
     }
 
-    // Update camera
-    const targetCx = this.player.x - this.viewW / 2;
-    const targetCy = this.player.y - this.viewH / 2;
-    this.camera.x = lerp(this.camera.x, clamp(targetCx, 0, WORLD_WIDTH - this.viewW), 0.12);
-    this.camera.y = lerp(this.camera.y, clamp(targetCy, 0, WORLD_HEIGHT - this.viewH), 0.12);
+    // Update camera. Cinematic sequences (e.g. expandWorld) override the
+    // normal player-follow behavior with scripted keyframes.
+    if (this.cinematic) {
+      const c = this.cinematic;
+      c.t += dt;
+      let elapsed = c.t;
+      let seg = null;
+      for (const s of c.segments) {
+        if (elapsed < s.duration) { seg = s; break; }
+        elapsed -= s.duration;
+      }
+      if (seg) {
+        const t = clamp(elapsed / seg.duration, 0, 1);
+        const e = t * t * (3 - 2 * t);  // smoothstep
+        this.camera.cx = lerp(seg.from.cx, seg.to.cx, e);
+        this.camera.cy = lerp(seg.from.cy, seg.to.cy, e);
+        this.camera.scale = lerp(seg.from.scale, seg.to.scale, e);
+      } else {
+        // Sequence complete — return to player follow.
+        this.cinematic = null;
+        this.camera.scale = 1;
+      }
+    } else {
+      this.camera.cx = lerp(this.camera.cx, this.player.x, 0.12);
+      this.camera.cy = lerp(this.camera.cy, this.player.y, 0.12);
+      // Smoothly settle scale back to 1 if it drifted.
+      if (this.camera.scale !== 1) this.camera.scale = lerp(this.camera.scale, 1, 0.18);
+    }
+    // Project center+scale → top-left for legacy code paths.
+    const halfWworld = this.viewW / (2 * this.camera.scale);
+    const halfHworld = this.viewH / (2 * this.camera.scale);
+    this.camera.x = clamp(this.camera.cx - halfWworld, 0, Math.max(0, WORLD_WIDTH - 2 * halfWworld));
+    this.camera.y = clamp(this.camera.cy - halfHworld, 0, Math.max(0, WORLD_HEIGHT - 2 * halfHworld));
 
     // Update HUD
     const total = 1 + this.friends.length;
     const stageLabel = this.expansionStage > 0 ? ` 🌍${this.expansionStage}` : '';
-    document.getElementById('antCount').textContent = `🐜 ${total}${stageLabel}`;
+    const lvLabel = this.colonyLevel > 0 ? ` ⭐${this.colonyLevel}` : '';
+    document.getElementById('antCount').textContent = `🐜 ${total}${stageLabel}${lvLabel}`;
 
     // HP bar with digits + low-hp pulsing.
     const hpFill = document.getElementById('hpFill');
@@ -3842,9 +4071,47 @@ class Game {
       this.expandWorld();
     }
 
+    // Track milestone times (every 100 friends).
+    if (this.stats) {
+      this.stats.playTimeMs = (this.stats.playTimeMs || 0) + dt;
+      const milestone = Math.floor(total / 100) * 100;
+      if (milestone > 0 && !this.stats.milestones[milestone]) {
+        this._statMilestone(milestone);
+      }
+    }
+
+    // Colony level-up checks (passive bonuses).
+    for (const def of COLONY_LEVELS) {
+      if (this.colonyLevel >= def.lv) continue;
+      if (total < def.friends) break;
+      this.colonyLevel = def.lv;
+      def.apply(this);
+      this.showMessage(`⭐ Lv ${def.lv}! ${def.label}`, 'success', 3500);
+      this.shakeTimer = 350;
+      this.shakeMag = 4;
+      // Sparkle burst
+      for (let i = 0; i < 22; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = rand(1.2, 3.2);
+        this.particles.push(new Particle(
+          this.player.x, this.player.y,
+          Math.cos(a) * s, Math.sin(a) * s - 1.2,
+          rand(700, 1100), '#ffe680', rand(2, 3.5)
+        ));
+      }
+    }
+
     // Win check
     if (total >= WIN_ANT_COUNT) {
       this.gameState = 'won';
+      // Record best clear time before clearing the save.
+      if (this.stats) {
+        const elapsed = Math.round(performance.now() - this.stats.runStart);
+        if (!this.stats.bestClearMs || elapsed < this.stats.bestClearMs) {
+          this.stats.bestClearMs = elapsed;
+        }
+        this._persistStatsOnly();
+      }
       this.clearSave();
       document.getElementById('winScreen').classList.remove('hidden');
     }
@@ -3876,7 +4143,12 @@ class Game {
       shakeY = (Math.random() - 0.5) * this.shakeMag * t * 2;
     }
     ctx.save();
-    ctx.translate(-this.camera.x + shakeX, -this.camera.y + shakeY);
+    // Cinematic-aware transform: translate to viewport center, apply scale,
+    // then translate so (camera.cx, camera.cy) maps to that center.
+    const scale = this.camera.scale || 1;
+    ctx.translate(this.viewW / 2 + shakeX, this.viewH / 2 + shakeY);
+    if (scale !== 1) ctx.scale(scale, scale);
+    ctx.translate(-this.camera.cx, -this.camera.cy);
 
     this.drawBackground(ctx);
     this.drawNest(ctx);
@@ -3921,7 +4193,15 @@ class Game {
     this._nestIdleHidden = nestIdleHidden;
 
     drawables.sort((a, b) => a.y - b.y);
-    drawables.forEach(d => d.draw(ctx));
+    // LOD draw: skip entities completely off-screen (with margin).
+    const dLeft   = this.camera.x - 60;
+    const dTop    = this.camera.y - 60;
+    const dRight  = this.camera.x + this.viewW + 60;
+    const dBottom = this.camera.y + this.viewH + 60;
+    drawables.forEach(d => {
+      if (d.x < dLeft || d.x > dRight || d.y < dTop || d.y > dBottom) return;
+      d.draw(ctx);
+    });
 
     // Call-stress aura around the player while the call window is hot.
     if (this.player && !this.player.dead && this.callStress > 0.4) {
@@ -4102,12 +4382,17 @@ class Game {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
+    // Effective viewport size in world units (camera scale changes during cinematic).
+    const scale = (this.camera && this.camera.scale) || 1;
+    const viewWworld = this.viewW / scale;
+    const viewHworld = this.viewH / scale;
+
     // Texture dots (small specks for grass detail)
     ctx.fillStyle = 'rgba(60, 110, 50, 0.25)';
     const cx0 = Math.max(0, Math.floor(this.camera.x / 50) * 50);
     const cy0 = Math.max(0, Math.floor(this.camera.y / 50) * 50);
-    const cx1 = Math.min(WORLD_WIDTH, this.camera.x + this.viewW + 50);
-    const cy1 = Math.min(WORLD_HEIGHT, this.camera.y + this.viewH + 50);
+    const cx1 = Math.min(WORLD_WIDTH, this.camera.x + viewWworld + 50);
+    const cy1 = Math.min(WORLD_HEIGHT, this.camera.y + viewHworld + 50);
     for (let x = cx0; x < cx1; x += 50) {
       for (let y = cy0; y < cy1; y += 50) {
         // pseudo-random but stable speck positions
@@ -4120,7 +4405,7 @@ class Game {
 
     // Terrain patches on top of base grass
     if (this.terrain) {
-      this.terrain.draw(ctx, this.camera.x, this.camera.y, this.viewW, this.viewH);
+      this.terrain.draw(ctx, this.camera.x, this.camera.y, viewWworld, viewHworld);
     }
 
     // World boundary
