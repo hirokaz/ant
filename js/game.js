@@ -871,6 +871,7 @@ class Food {
       // Banner shown via game state
       if (c >= 2) {
         game._comboBannerTimer = 1100;
+        if (game.audio) game.audio.play('combo');
       }
     }
     // Spawn eggs (terrain bonus + combo bonus).
@@ -2627,6 +2628,17 @@ class AudioFx {
                         this._tone(t + 0.12, 659, 0.12, 0.25, 'triangle');
                         this._tone(t + 0.24, 784, 0.12, 0.25, 'triangle');
                         this._tone(t + 0.36, 1047, 0.30, 0.27, 'triangle'); break;
+      case 'combo':     this._tone(t,        880, 0.05, 0.20, 'triangle');
+                        this._tone(t + 0.05, 1175, 0.06, 0.22, 'triangle'); break;
+      case 'powerup':   this._tone(t,        523, 0.06, 0.22, 'square');
+                        this._tone(t + 0.06, 784, 0.06, 0.24, 'square');
+                        this._tone(t + 0.12, 1047, 0.10, 0.25, 'square'); break;
+      case 'death':     this._tone(t,        440, 0.10, 0.22, 'sawtooth');
+                        this._tone(t + 0.10, 330, 0.12, 0.22, 'sawtooth');
+                        this._tone(t + 0.22, 220, 0.20, 0.25, 'sawtooth'); break;
+      case 'respawn':   this._tone(t,        330, 0.10, 0.22, 'sine');
+                        this._tone(t + 0.10, 440, 0.10, 0.22, 'sine');
+                        this._tone(t + 0.20, 660, 0.16, 0.22, 'sine'); break;
     }
   }
   _tone(when, freq, dur, vol, type) {
@@ -2636,6 +2648,102 @@ class AudioFx {
     o.type = type;
     o.frequency.value = freq;
     g.gain.setValueAtTime(vol, when);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+    o.connect(g); g.connect(this.master);
+    o.start(when); o.stop(when + dur + 0.05);
+  }
+}
+
+// ---------- BGM ----------
+// Procedural background music. No audio files — built from oscillators on
+// top of AudioFx. Two moods: "calm" (default) and "tense" (during raids).
+class BGMPlayer {
+  constructor(fx) {
+    this.fx = fx;
+    this.enabled = false;
+    try { this.enabled = localStorage.getItem('ant_bgm') === 'true'; } catch (_) {}
+    this.intensity = 'calm';
+    this.scheduler = null;
+    this.nextNoteTime = 0;
+    this.step = 0;
+    this.master = null;
+    // 16-step patterns for each mood. Frequencies in Hz.
+    // Calm: C major pentatonic-ish arp + bass on the I/V/vi/IV chords.
+    this.patterns = {
+      calm: {
+        arp:  [262, 330, 392, 523, 392, 330, 262, 196,
+               220, 277, 330, 440, 330, 277, 220, 165],
+        bass: [131, null, null, null, 196, null, null, null,
+               220, null, null, null, 175, null, null, null],
+        tempo: 100
+      },
+      tense: {
+        arp:  [220, 262, 311, 415, 311, 262, 220, 175,
+               196, 233, 294, 392, 294, 233, 196, 147],
+        bass: [110, null, null, null, 147, null, null, null,
+               165, null, null, null, 123, null, null, null],
+        tempo: 130
+      }
+    };
+  }
+  _ensureChain() {
+    this.fx._ensureCtx();
+    if (!this.fx.ctx) return false;
+    if (!this.master) {
+      this.master = this.fx.ctx.createGain();
+      this.master.gain.value = 0.18;  // BGM softer than SFX
+      this.master.connect(this.fx.ctx.destination);
+    }
+    return true;
+  }
+  setEnabled(on) {
+    this.enabled = !!on;
+    try { localStorage.setItem('ant_bgm', this.enabled ? 'true' : 'false'); } catch (_) {}
+    if (this.enabled) this.start();
+    else this.stop();
+  }
+  toggle() { this.setEnabled(!this.enabled); return this.enabled; }
+  setIntensity(mode) { this.intensity = mode; }
+  start() {
+    if (!this.enabled) return;
+    if (!this._ensureChain()) return;
+    this.fx.resume();
+    this.nextNoteTime = this.fx.ctx.currentTime + 0.1;
+    if (!this.scheduler) {
+      this.scheduler = setInterval(() => this._tick(), 25);
+    }
+  }
+  stop() {
+    if (this.scheduler) { clearInterval(this.scheduler); this.scheduler = null; }
+  }
+  _tick() {
+    if (!this.fx.ctx) return;
+    const now = this.fx.ctx.currentTime;
+    while (this.nextNoteTime < now + 0.12) {
+      this._playStep(this.step, this.nextNoteTime);
+      const tempo = this.patterns[this.intensity].tempo;
+      this.nextNoteTime += 60 / tempo / 4;  // 16th note
+      this.step = (this.step + 1) % 16;
+    }
+  }
+  _playStep(step, when) {
+    const pat = this.patterns[this.intensity] || this.patterns.calm;
+    const note = pat.arp[step];
+    if (note) this._note(when, note, 0.18, 0.18, 'triangle');
+    const b = pat.bass[step];
+    if (b) this._note(when, b, 0.40, 0.20, 'sine');
+    // Soft pad on first beat of each bar
+    if (step === 0) this._note(when, this.intensity === 'tense' ? 110 : 131, 1.6, 0.10, 'sine');
+  }
+  _note(when, freq, dur, vol, type) {
+    const ctx = this.fx.ctx;
+    if (!ctx || !this.master) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0, when);
+    g.gain.linearRampToValueAtTime(vol, when + 0.02);
     g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
     o.connect(g); g.connect(this.master);
     o.start(when); o.stop(when + dur + 0.05);
@@ -2660,6 +2768,7 @@ class Game {
     this.camera = { x: 0, y: 0, cx: 0, cy: 0, scale: 1 };
     this.cinematic = null;
     this.audio = new AudioFx();
+    this.bgm = new BGMPlayer(this.audio);
     // Vibration setting (default ON). Stored separately from SFX.
     let vib = true;
     try { const v = localStorage.getItem('ant_vibrate'); if (v !== null) vib = v === 'true'; } catch (_) {}
@@ -2690,6 +2799,13 @@ class Game {
     this.resize();
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 100));
+    // Pause BGM when the tab is hidden so it doesn't keep playing in the
+    // background. SFX are event-driven so they don't need explicit pausing.
+    document.addEventListener('visibilitychange', () => {
+      if (!this.bgm) return;
+      if (document.hidden) this.bgm.stop();
+      else if (this.bgm.enabled && this.gameState === 'playing') this.bgm.start();
+    });
     this.setupControls();
     this.setupUI();
     this.generateGrass();
@@ -3002,6 +3118,7 @@ class Game {
     const bossLabel = includeBoss ? ' + 👑ボス' : '';
     this.showMessage(`⚠️ 巣に敵が来る！ (${count}体${bossLabel})`, 'warn', 3500);
     if (this.audio) this.audio.play('raid');
+    if (this.bgm) this.bgm.setIntensity('tense');
   }
 
   endRaid(success) {
@@ -3023,8 +3140,9 @@ class Game {
       } while ((y < 40 || x < 60 || x > WORLD_WIDTH - 60) && attempts < 8);
       if (attempts < 8) this.healItems.push(new HealItem(x, y));
     }
-    // Schedule next raid
+    // Schedule next raid + return to calm music.
     this.raidTimer = rand(90000, 180000);
+    if (this.bgm) this.bgm.setIntensity('calm');
     this.saveGame();
   }
 
@@ -3254,6 +3372,11 @@ class Game {
     // Initial food (always present so the player can immediately act)
     this.spawnInitialFoods();
     this._lastSaveTime = 0;
+    // Music lifecycle: start with calm mood when a run begins.
+    if (this.bgm) {
+      this.bgm.setIntensity('calm');
+      this.bgm.start();
+    }
   }
 
   setupControls() {
@@ -3405,6 +3528,22 @@ class Game {
       sfxBtn.addEventListener('touchstart', toggle, { passive: false });
     }
 
+    // BGM toggle (HUD icon).
+    const bgmBtn = document.getElementById('bgmToggle');
+    if (bgmBtn) {
+      const renderBgm = () => bgmBtn.classList.toggle('off', !this.bgm.enabled);
+      renderBgm();
+      const toggle = (e) => {
+        if (e) { e.preventDefault(); e.stopPropagation(); }
+        this.bgm.toggle();
+        renderBgm();
+        const sb = document.getElementById('settingBgm');
+        if (sb) { sb.classList.toggle('on', this.bgm.enabled); sb.textContent = this.bgm.enabled ? 'ON' : 'OFF'; }
+      };
+      bgmBtn.addEventListener('click', toggle);
+      bgmBtn.addEventListener('touchstart', toggle, { passive: false });
+    }
+
     // Pause button.
     const pauseBtn = document.getElementById('pauseBtn');
     if (pauseBtn) {
@@ -3456,6 +3595,15 @@ class Game {
         if (this.audio.enabled) this.audio.play('tap');
       });
     }
+    const settingBgm = document.getElementById('settingBgm');
+    if (settingBgm) {
+      settingBgm.addEventListener('click', () => {
+        this.bgm.toggle();
+        settingBgm.classList.toggle('on', this.bgm.enabled);
+        settingBgm.textContent = this.bgm.enabled ? 'ON' : 'OFF';
+        if (bgmBtn) bgmBtn.classList.toggle('off', !this.bgm.enabled);
+      });
+    }
     const settingVib = document.getElementById('settingVibrate');
     if (settingVib) {
       settingVib.addEventListener('click', () => {
@@ -3472,6 +3620,8 @@ class Game {
     this.gameState = 'paused';
     document.getElementById('pauseScreen').classList.remove('hidden');
     // Sync settings UI to current state.
+    const bgmS = document.getElementById('settingBgm');
+    if (bgmS) { bgmS.classList.toggle('on', this.bgm.enabled); bgmS.textContent = this.bgm.enabled ? 'ON' : 'OFF'; }
     const sb = document.getElementById('settingSfx');
     if (sb) { sb.classList.toggle('on', this.audio.enabled); sb.textContent = this.audio.enabled ? 'ON' : 'OFF'; }
     const vb = document.getElementById('settingVibrate');
@@ -4359,6 +4509,7 @@ class Game {
       this.gameState = 'dead';
       this.respawnTimer = 3000;
       this._statBump('deaths');
+      if (this.audio) this.audio.play('death');
       document.getElementById('deathScreen').classList.remove('hidden');
     } else {
       // Friend died — drop food if any
@@ -4384,6 +4535,7 @@ class Game {
     this.gameState = 'playing';
     document.getElementById('deathScreen').classList.add('hidden');
     this.showMessage('💪 復活！', 'success', 1800);
+    if (this.audio) this.audio.play('respawn');
     // Burst of golden particles around the spawn point.
     for (let i = 0; i < 28; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -4539,7 +4691,7 @@ class Game {
           const def = POWERUP_DEFS[pu.type];
           this.activePowerUpTimer = def.durationMs;
           this.showMessage(`✨ ${def.icon} ${def.label} 発動!`, 'success', 1800);
-          if (this.audio) this.audio.play('heal');
+          if (this.audio) this.audio.play('powerup');
           // Sparkles
           for (let i = 0; i < 14; i++) {
             const a = Math.random() * Math.PI * 2;
@@ -4960,6 +5112,7 @@ class Game {
     if (total >= WIN_ANT_COUNT) {
       this.gameState = 'won';
       if (this.audio) this.audio.play('win');
+      if (this.bgm) this.bgm.stop();
       // Record best clear time + history; render the win-screen panel.
       let elapsed = 0;
       let isNewBest = false;

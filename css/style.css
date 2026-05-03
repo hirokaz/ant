@@ -255,7 +255,7 @@ html, body {
   border-color: rgba(255, 180, 180, 0.5);
 }
 
-#sfxToggle {
+#sfxToggle, #bgmToggle {
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   border: 2px solid rgba(255, 255, 255, 0.2);
@@ -271,7 +271,8 @@ html, body {
   justify-content: center;
   flex-shrink: 0;
 }
-#sfxToggle:active { transform: scale(0.92); background: rgba(255, 255, 255, 0.25); }
+#sfxToggle:active, #bgmToggle:active { transform: scale(0.92); background: rgba(255, 255, 255, 0.25); }
+#bgmToggle.off { opacity: 0.55; }
 
 /* Friend-count bounce when a new ant hatches. */
 #antCount.bump {
