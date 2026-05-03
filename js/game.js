@@ -4439,6 +4439,10 @@ class Game {
   // Stronger / boss-empowered enemies drop a medium food instead so the kill
   // feels meaningfully rewarding.
   dropFoodOnEnemyDeath(enemy) {
+    // Tutorial step 3 advances on ANY enemy death, not only player kills.
+    // Friends often finish enemies before the player can land the killing
+    // blow, so requiring a player kill leaves the hint stuck on screen.
+    if (this._advanceTutorial) this._advanceTutorial('kill');
     const x = clamp(enemy.x, 30, WORLD_WIDTH - 30);
     const y = clamp(enemy.y, 30, NEST_Y - NEST_RADIUS_BASE - 30);
     // Skip if drop would land in nest (raiders dying inside the nest)
