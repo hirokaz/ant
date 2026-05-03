@@ -6,20 +6,17 @@
 // World dimensions are mutable to support runtime expansion (Issue #7).
 // The world is large from the start; only the initial zone (around the nest)
 // is accessible. Other tiles are rock and unlock when new zones appear.
-let WORLD_WIDTH = 5000;
-let WORLD_HEIGHT = 5500;
+// Zones form a 5x5 (or larger) spiral grid centred on the nest.
+let WORLD_WIDTH = 4400;
+let WORLD_HEIGHT = 4400;
 
-// Nest position is fixed inside the initial zone, near the south of it.
-let NEST_X = 2500;
-let NEST_Y = 4400;
+// Nest position is fixed at the world centre, inside the initial zone.
+let NEST_X = 2200;
+let NEST_Y = 2200;
 const NEST_RADIUS_BASE = 120;
 const EGG_ROOM_RADIUS = 70;
 
-// Initial accessible zone bounds (rectangle around / above the nest).
-const INITIAL_ZONE_HALF_W = 700;   // → 1400 wide total
-const INITIAL_ZONE_TOP    = 1700;  // → reaches up to NEST_Y - 1700
-const INITIAL_ZONE_BOTTOM = 180;   // → reaches down to NEST_Y + 180 (covers nest disc)
-// New zones are squares ≈ 25% of the initial zone area.
+// Square zone size (≈ 1/4 of the previous initial-area dimensions).
 const ZONE_SIZE = 800;
 
 const PLAYER_SPEED = 2.6;
@@ -2854,10 +2851,13 @@ class Game {
 
   generateGrass() {
     this.grassTufts = [];
-    // Sprinkle tufts inside the initial zone (above the nest).
-    for (let i = 0; i < 60; i++) {
-      const x = rand(NEST_X - INITIAL_ZONE_HALF_W + 40, NEST_X + INITIAL_ZONE_HALF_W - 40);
-      const y = rand(NEST_Y - INITIAL_ZONE_TOP + 40, NEST_Y - NEST_RADIUS_BASE - 40);
+    // Sprinkle tufts inside the initial (square) zone, avoiding the nest disc.
+    const half = ZONE_SIZE / 2;
+    for (let i = 0; i < 50; i++) {
+      const x = rand(NEST_X - half + 40, NEST_X + half - 40);
+      const y = rand(NEST_Y - half + 40, NEST_Y + half - 40);
+      // Don't drop tufts on top of the nest disc.
+      if (Math.hypot(x - NEST_X, y - NEST_Y) < NEST_RADIUS_BASE + 30) continue;
       this.grassTufts.push(new GrassTuft(x, y, rand(0.7, 1.2)));
     }
     // A few around the nest perimeter for visual flair.
@@ -2975,32 +2975,35 @@ class Game {
     };
   }
 
-  // Pick a position for the next zone: a ZONE_SIZE square attached to one of
-  // the existing zones in a random direction. Returns null if nothing valid.
+  // Spiral grid coordinate for zone N (N=0 is the initial zone at origin).
+  // Returns [gx, gy] in zone-grid units. Matches the numbered layout the
+  // user designed (1=N, 2=NE, 3=E, 4=SE, 5=S, 6=SW, 7=W, 8=NW, then layer 2…).
+  _spiralCoord(n) {
+    if (n === 0) return [0, 0];
+    const L = Math.ceil((Math.sqrt(n + 1) - 1) / 2);
+    const start = (2 * L - 1) * (2 * L - 1);
+    const k = n - start;
+    const side = 2 * L;
+    let gx, gy;
+    if      (k < side)     { gx = -(L - 1) + k;             gy = -L; }
+    else if (k < 2 * side) { gx =  L;                       gy = -(L - 1) + (k -     side); }
+    else if (k < 3 * side) { gx = (L - 1) - (k - 2 * side); gy =  L; }
+    else                   { gx = -L;                       gy = (L - 1) - (k - 3 * side); }
+    return [gx, gy];
+  }
+
+  // Compute the next zone's bounds from the spiral. Stage N maps to grid
+  // index N, so stage 1 → north of nest, stage 2 → north-east corner, etc.
   _pickZonePlacement() {
     const sz = ZONE_SIZE;
-    const tries = 80;
-    for (let i = 0; i < tries; i++) {
-      const base = pickRand(this.zones);
-      const dir  = pickRand(['N', 'S', 'E', 'W']);
-      let nx0, ny0;
-      if (dir === 'N') {
-        nx0 = base.x0 + (base.x1 - base.x0 - sz) / 2 + rand(-220, 220);
-        ny0 = base.y0 - sz;
-      } else if (dir === 'S') {
-        nx0 = base.x0 + (base.x1 - base.x0 - sz) / 2 + rand(-220, 220);
-        ny0 = base.y1;
-      } else if (dir === 'E') {
-        nx0 = base.x1;
-        ny0 = base.y0 + (base.y1 - base.y0 - sz) / 2 + rand(-220, 220);
-      } else { // W
-        nx0 = base.x0 - sz;
-        ny0 = base.y0 + (base.y1 - base.y0 - sz) / 2 + rand(-220, 220);
-      }
-      const candidate = { x0: nx0, y0: ny0, x1: nx0 + sz, y1: ny0 + sz };
-      if (this._zoneIsValid(candidate)) return candidate;
-    }
-    return null;
+    const idx = this.expansionStage + 1;  // about to advance to this stage
+    const [gx, gy] = this._spiralCoord(idx);
+    const cx = NEST_X + gx * sz;
+    const cy = NEST_Y + gy * sz;
+    const half = sz / 2;
+    const z = { x0: cx - half, y0: cy - half, x1: cx + half, y1: cy + half };
+    if (!this._zoneIsValid(z)) return null;
+    return z;
   }
 
   _zoneIsValid(z) {
@@ -3247,10 +3250,10 @@ class Game {
 
   startGame(saveData = null) {
     // Reset world dimensions in case of replay after expansion
-    WORLD_WIDTH = 5000;
-    WORLD_HEIGHT = 5500;
-    NEST_X = 2500;
-    NEST_Y = 4400;
+    WORLD_WIDTH = 4400;
+    WORLD_HEIGHT = 4400;
+    NEST_X = 2200;
+    NEST_Y = 2200;
 
     this.player = new Ant(NEST_X, NEST_Y - 60, true);
     // Apply selected skin (cosmetic) to player ant.
@@ -3318,11 +3321,12 @@ class Game {
     // Initial terrain: everything is rock by default; we then carve out the
     // initial zone with grass.
     this.terrain = new TerrainGrid(WORLD_WIDTH, WORLD_HEIGHT);
+    const half = ZONE_SIZE / 2;
     const initialZone = {
-      x0: NEST_X - INITIAL_ZONE_HALF_W,
-      y0: NEST_Y - INITIAL_ZONE_TOP,
-      x1: NEST_X + INITIAL_ZONE_HALF_W,
-      y1: NEST_Y + INITIAL_ZONE_BOTTOM,
+      x0: NEST_X - half,
+      y0: NEST_Y - half,
+      x1: NEST_X + half,
+      y1: NEST_Y + half,
       biome: 'grass'
     };
     this.zones.push(initialZone);
@@ -3961,7 +3965,7 @@ class Game {
     if (!this.player || this.gameState !== 'playing') return;
     try {
       const save = {
-        v: 1,
+        v: 2,
         friendCount: this.friends.filter(f => !f.dead).length,
         expansionStage: this.expansionStage,
         unlockedBiomes: [...this.unlockedBiomes],
@@ -4001,7 +4005,7 @@ class Game {
       const raw = localStorage.getItem('ant_save');
       if (!raw) return null;
       const data = JSON.parse(raw);
-      if (!data || data.v !== 1) return null;
+      if (!data || data.v !== 2) return null;
       // Quick sanity check
       if (typeof data.friendCount !== 'number' || !Array.isArray(data.zones)) return null;
       return data;
@@ -4215,12 +4219,9 @@ class Game {
     };
 
     // Early stages keep food close to the nest so the player can find easy
-    // wins right away. The radius grows as the colony expands.
+    // wins right away. The radius grows as new zones unlock around the nest.
     const _stage = this.expansionStage;
-    const maxFromNest = _stage === 0 ? 380
-                      : _stage === 1 ? 580
-                      : _stage === 2 ? 800
-                      : Infinity;
+    const maxFromNest = _stage === 0 ? 380 : Infinity;
 
     // Find a candidate position weighted by terrain. Reject pond cells and
     // anything that's still rock (outside an unlocked zone).
