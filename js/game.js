@@ -98,6 +98,44 @@ class Ant {
     if (this.invuln > 0) this.invuln -= dt;
     if (this.callTimer > 0) this.callTimer -= dt;
 
+    // Terrain effects (slow/HP drain) — ground units only, ignored inside the nest.
+    this._terrainSpeedMul = 1;
+    if (game.terrain && !inNest(this.x, this.y)) {
+      const t = game.terrain.getAt(this.x, this.y);
+      const def = TERRAIN_DEFS[t];
+      if (def) {
+        this._terrainSpeedMul = def.speed;
+        if (def.dpsOnGround !== 0) {
+          this._terrainHpAcc = (this._terrainHpAcc || 0) + dt * 0.001 * def.dpsOnGround;
+          if (this._terrainHpAcc >= 1) {
+            const dmg = Math.floor(this._terrainHpAcc);
+            this._terrainHpAcc -= dmg;
+            this.hp = clamp(this.hp - dmg, 0, this.maxHp);
+            if (this.hp <= 0) {
+              this.hp = 0;
+              this.dead = true;
+              game.onAntDeath(this);
+              return;
+            }
+          } else if (this._terrainHpAcc <= -1) {
+            const heal = Math.floor(-this._terrainHpAcc);
+            this._terrainHpAcc += heal;
+            this.hp = clamp(this.hp + heal, 0, this.maxHp);
+          }
+        }
+        // Footstep particle (occasional) for noticeable terrains
+        if (def.footstepColor && this._moving && Math.random() < 0.04) {
+          game.particles.push(new Particle(
+            this.x + rand(-3, 3), this.y + 5,
+            rand(-0.5, 0.5), rand(-0.4, 0.6),
+            rand(250, 450), def.footstepColor, rand(1.5, 2.5)
+          ));
+        }
+      }
+    } else {
+      this._terrainHpAcc = 0;
+    }
+
     if (this.isPlayer) {
       this.updatePlayer(dt, game);
     } else {
@@ -129,6 +167,9 @@ class Ant {
       else if (required >= 3) speed *= 0.55;
       else speed *= 0.85;
     }
+
+    // Apply terrain slowdown
+    speed *= this._terrainSpeedMul || 1;
 
     if (input.moving) {
       const dx = input.moveX;
@@ -246,8 +287,9 @@ class Ant {
     const dy = target.y - this.y;
     const d = Math.hypot(dx, dy);
     if (d > 0.5) {
-      this.x += (dx / d) * spd;
-      this.y += (dy / d) * spd;
+      const eff = spd * (this._terrainSpeedMul || 1);
+      this.x += (dx / d) * eff;
+      this.y += (dy / d) * eff;
       this.targetAngle = Math.atan2(dy, dx);
     }
   }
@@ -784,6 +826,31 @@ class Enemy {
     this.actionPhase += dt;
     this.wingPhase += dt * 0.04;
 
+    // Terrain effects (wasps fly over slow/dps terrain)
+    this._terrainSpeedMul = 1;
+    const flying = this.type === 'wasp';
+    if (game.terrain && !inNest(this.x, this.y)) {
+      const t = game.terrain.getAt(this.x, this.y);
+      const def = TERRAIN_DEFS[t];
+      if (def && !(flying && def.flyingImmune)) {
+        this._terrainSpeedMul = def.speed;
+        if (def.dpsOnGround > 0) {
+          this._terrainHpAcc = (this._terrainHpAcc || 0) + dt * 0.001 * def.dpsOnGround;
+          if (this._terrainHpAcc >= 1) {
+            const dmg = Math.floor(this._terrainHpAcc);
+            this._terrainHpAcc -= dmg;
+            this.hp = clamp(this.hp - dmg, 0, this.maxHp);
+            if (this.hp <= 0) {
+              this.hp = 0;
+              this.dead = true;
+              game.spawnEnemyDeath(this.x, this.y);
+              return;
+            }
+          }
+        }
+      }
+    }
+
     // Lose target if it enters nest or gets too far
     if (this.target && (this.target.dead || inNest(this.target.x, this.target.y) ||
         dist(this, this.target) > this.detectRange * 2.5)) {
@@ -992,8 +1059,9 @@ class Enemy {
     const dy = t.y - this.y;
     const d = Math.hypot(dx, dy);
     if (d > 0.5) {
-      const nx = (dx / d) * spd;
-      const ny = (dy / d) * spd;
+      const eff = spd * (this._terrainSpeedMul || 1);
+      const nx = (dx / d) * eff;
+      const ny = (dy / d) * eff;
       const newX = this.x + nx;
       const newY = this.y + ny;
       if (inNest(newX, newY)) {
@@ -1446,6 +1514,19 @@ class GrassTuft {
 // ---------- Terrain ----------
 const TILE_SIZE = 80;
 const TERRAIN_TYPES = ['grass', 'pond', 'sand', 'mud', 'flower', 'leaves', 'concrete'];
+
+// Per-tile gameplay effects. `dpsOnGround` = HP per second drained on ground units.
+// `flyingImmune` = wasps and similar ignore the slow/dps penalty.
+const TERRAIN_DEFS = {
+  grass:    { speed: 1.00, dpsOnGround:  0,   flyingImmune: false, footstepColor: null },
+  pond:     { speed: 0.45, dpsOnGround:  1.5, flyingImmune: true,  footstepColor: '#a0d8ff' },
+  sand:     { speed: 0.75, dpsOnGround:  0,   flyingImmune: false, footstepColor: '#e8c98a' },
+  mud:      { speed: 0.55, dpsOnGround:  0.6, flyingImmune: false, footstepColor: '#5a3a1f' },
+  flower:   { speed: 1.00, dpsOnGround: -0.2, flyingImmune: false, footstepColor: null },
+  leaves:   { speed: 0.85, dpsOnGround:  0,   flyingImmune: false, footstepColor: '#b8742a' },
+  concrete: { speed: 1.15, dpsOnGround:  0,   flyingImmune: false, footstepColor: null }
+};
+
 // Base colors used as fallback rendering before per-type detail kicks in.
 const TERRAIN_BASE_COLOR = {
   grass:    null, // null = transparent (use existing background gradient)
