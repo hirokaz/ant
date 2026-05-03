@@ -258,11 +258,16 @@ class Ant {
         }
       }
 
-      // Auto-defend: if a nearby enemy is targeting us or close, fight
-      const enemy = game.findClosestEnemy(this.x, this.y, 100);
-      if (enemy && (enemy.target === this || dist(this, enemy) < 60)) {
-        this.state = 'attacking';
-        this.target = enemy;
+      // Auto-defend: if a nearby enemy is targeting us or close, fight.
+      // Grace period: skip auto-defend during the first ~3s after being called
+      // so the player can pull friends out of fights to follow them.
+      const recentlyCalled = this.callTimer > 9000;
+      if (!recentlyCalled) {
+        const enemy = game.findClosestEnemy(this.x, this.y, 100);
+        if (enemy && (enemy.target === this || dist(this, enemy) < 60)) {
+          this.state = 'attacking';
+          this.target = enemy;
+        }
       }
 
       // Follow times out — go back to idle
@@ -2421,20 +2426,36 @@ class Game {
 
   playerCallFriends() {
     if (!this.player || this.player.dead) return;
-    // Bring nearby idle friends and even those wandering far
-    let called = 0;
-    this.friends.forEach(f => {
-      if (f.dead) return;
-      if (f.state === 'carrying') return;
-      if (called >= 8) return;
+
+    // Pick the closest callable friends so the response feels responsive even
+    // in late game when the colony has hundreds of ants scattered around.
+    const MAX_NEW_CALLS = 12;
+    const candidates = this.friends
+      .filter(f => !f.dead && f.state !== 'carrying')
+      .map(f => ({ f, d: dist(f, this.player) }))
+      .sort((a, b) => a.d - b.d);
+
+    let switched = 0;   // ants newly pulled into follow
+    let refreshed = 0;  // ants already following (timer refreshed, no cap cost)
+    for (const { f } of candidates) {
+      const wasFollowing = f.state === 'follow';
+      if (!wasFollowing && switched >= MAX_NEW_CALLS) continue;
+
       f.state = 'follow';
       f.target = null;
       f.callTimer = 12000;
-      called++;
-    });
-    if (called > 0) {
+      if (wasFollowing) refreshed++;
+      else switched++;
+    }
+
+    const total = switched + refreshed;
+    if (total > 0) {
       this.spawnCallEffect();
-      this.showMessage(`仲間 ${called}匹を呼んだ！`, 'success', 1200);
+      if (switched > 0) {
+        this.showMessage(`仲間 ${switched}匹を呼んだ！`, 'success', 1200);
+      } else {
+        this.showMessage(`仲間 ${total}匹が追従中`, 'success', 1100);
+      }
     } else {
       this.showMessage('呼べる仲間がいない…', 'warn', 1200);
     }
