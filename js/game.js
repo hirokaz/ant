@@ -3034,6 +3034,7 @@ class Game {
     this.raidTimer = 50000;  // first raid possible after ~50s
     this.raidActive = false;
     this.raidEnemies = [];
+    this.pendingExpansionRaid = false;
     this.unlockedBiomes = new Set();
 
     this.resize();
@@ -3163,8 +3164,11 @@ class Game {
     };
 
     // 10 seconds after the area opens, the new area's denizens raid the nest.
-    // Override the natural raidTimer with a short fuse for this dramatic beat.
-    if (this.friends.filter(f => !f.dead).length >= 10 && !this.raidActive) {
+    // GUARANTEED: this raid always fires, even if a raid is currently active
+    // (it queues for after) and even if friend count is low (force bypasses
+    // the normal threshold). The expansion-raid is a scripted dramatic beat.
+    this.pendingExpansionRaid = true;
+    if (!this.raidActive) {
       this.raidTimer = 10000;
       this.raidWarningGiven = false;
       this.raidImminent = false;
@@ -3312,9 +3316,9 @@ class Game {
   // Begin a nest raid — a coordinated attack heading straight for the nest.
   // Both squad size and per-raider strength scale with the colony, and an
   // occasional very strong boss raider can join the formation.
-  startRaid() {
+  startRaid(force = false) {
     if (this.raidActive) return;
-    if (this.friends.filter(f => !f.dead).length < 10) return;
+    if (!force && this.friends.filter(f => !f.dead).length < 10) return;
     const totalAnts = 1 + this.friends.length;
 
     // Squad size: 3 → 22 across 0 → 1000 friends.
@@ -3431,13 +3435,21 @@ class Game {
         }
       }
     }
-    // Schedule next raid + return to calm music. Larger colonies get
-    // raided more often (they can handle it, and the action stays lively).
-    // Window shrinks from 60-110s at 0 friends down to ~30-55s at 1000+.
-    const tFr = Math.min(1, this.friends.length / 1000);
-    const minMs = 60000 - 30000 * tFr;
-    const maxMs = 110000 - 55000 * tFr;
-    this.raidTimer = rand(minMs, maxMs);
+    // Schedule next raid + return to calm music. If an area opened during
+    // the raid, honor the guaranteed 10s post-expansion raid now.
+    if (this.pendingExpansionRaid) {
+      this.raidTimer = 10000;
+      this.raidWarningGiven = false;
+      this.raidImminent = false;
+    } else {
+      // Larger colonies get raided more often (they can handle it, and the
+      // action stays lively). Window shrinks from 60-110s at 0 friends down
+      // to ~30-55s at 1000+.
+      const tFr = Math.min(1, this.friends.length / 1000);
+      const minMs = 60000 - 30000 * tFr;
+      const maxMs = 110000 - 55000 * tFr;
+      this.raidTimer = rand(minMs, maxMs);
+    }
     if (this.bgm) this.bgm.setIntensity('calm');
     this.saveGame();
   }
@@ -3531,6 +3543,7 @@ class Game {
     this.raidTimer = 50000;
     this.raidActive = false;
     this.raidEnemies = [];
+    this.pendingExpansionRaid = false;
     this.raidWarningGiven = false;
     this.raidImminent = false;
     this.raidArrived = false;
@@ -5218,8 +5231,12 @@ class Game {
         }
       }
       if (this.raidTimer <= 0) {
-        this.startRaid();
-        if (!this.raidActive) {
+        // Post-expansion raids are GUARANTEED — bypass friend threshold.
+        const force = !!this.pendingExpansionRaid;
+        this.startRaid(force);
+        if (this.raidActive) {
+          this.pendingExpansionRaid = false;
+        } else {
           // Failed precondition (e.g. <10 friends) — try again sooner.
           this.raidTimer = rand(20000, 35000);
           this.raidWarningGiven = false;
