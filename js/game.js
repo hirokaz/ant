@@ -3031,7 +3031,7 @@ class Game {
     this.expansionStage = 0;
     this.shakeTimer = 0;
     this.shakeMag = 0;
-    this.raidTimer = 90000;  // first raid possible after ~90s
+    this.raidTimer = 50000;  // first raid possible after ~50s
     this.raidActive = false;
     this.raidEnemies = [];
     this.unlockedBiomes = new Set();
@@ -3164,7 +3164,7 @@ class Game {
 
     // 10 seconds after the area opens, the new area's denizens raid the nest.
     // Override the natural raidTimer with a short fuse for this dramatic beat.
-    if (this.friends.filter(f => !f.dead).length >= 20) {
+    if (this.friends.filter(f => !f.dead).length >= 10 && !this.raidActive) {
       this.raidTimer = 10000;
       this.raidWarningGiven = false;
       this.raidImminent = false;
@@ -3314,7 +3314,7 @@ class Game {
   // occasional very strong boss raider can join the formation.
   startRaid() {
     if (this.raidActive) return;
-    if (this.friends.filter(f => !f.dead).length < 20) return;
+    if (this.friends.filter(f => !f.dead).length < 10) return;
     const totalAnts = 1 + this.friends.length;
 
     // Squad size: 3 → 22 across 0 → 1000 friends.
@@ -3431,8 +3431,13 @@ class Game {
         }
       }
     }
-    // Schedule next raid + return to calm music.
-    this.raidTimer = rand(90000, 180000);
+    // Schedule next raid + return to calm music. Larger colonies get
+    // raided more often (they can handle it, and the action stays lively).
+    // Window shrinks from 60-110s at 0 friends down to ~30-55s at 1000+.
+    const tFr = Math.min(1, this.friends.length / 1000);
+    const minMs = 60000 - 30000 * tFr;
+    const maxMs = 110000 - 55000 * tFr;
+    this.raidTimer = rand(minMs, maxMs);
     if (this.bgm) this.bgm.setIntensity('calm');
     this.saveGame();
   }
@@ -3523,7 +3528,7 @@ class Game {
     this.expansionStage = 0;
     this.shakeTimer = 0;
     this.shakeMag = 0;
-    this.raidTimer = 90000;
+    this.raidTimer = 50000;
     this.raidActive = false;
     this.raidEnemies = [];
     this.raidWarningGiven = false;
@@ -5201,7 +5206,7 @@ class Game {
       this.raidTimer -= dt;
       // Pre-raid warning: heads-up ~8s before, second alarm ~3s before.
       const aliveFriends = this.friends.filter(f => !f.dead).length;
-      if (aliveFriends >= 20) {
+      if (aliveFriends >= 10) {
         if (!this.raidWarningGiven && this.raidTimer < 8000 && this.raidTimer > 0) {
           this.showMessage('⚠️ 敵の気配が近づいてくる…巣に戻る準備を！', 'warn', 4000);
           this._hintOnce('raid_warn', '巣に戻って迎え撃とう! 不在だと仲間が大量に減る');
@@ -5215,8 +5220,8 @@ class Game {
       if (this.raidTimer <= 0) {
         this.startRaid();
         if (!this.raidActive) {
-          // Failed precondition — try again later
-          this.raidTimer = rand(40000, 60000);
+          // Failed precondition (e.g. <10 friends) — try again sooner.
+          this.raidTimer = rand(20000, 35000);
           this.raidWarningGiven = false;
           this.raidImminent = false;
         }
