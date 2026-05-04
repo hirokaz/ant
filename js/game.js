@@ -935,30 +935,8 @@ class Food {
       }
     });
     this.carriers = [];
-    // Combo: chain deposits inside the 12s window for bonus eggs.
-    let comboBonusEggs = 0;
-    if (game.combo) {
-      if (game.combo.timerMs > 0) {
-        game.combo.count++;
-      } else {
-        game.combo.count = 1;
-      }
-      game.combo.timerMs = 12000;
-      // Bonus formula: stepwise reward.
-      const c = game.combo.count;
-      if (c >= 10)      comboBonusEggs = 8;
-      else if (c >= 5)  comboBonusEggs = 4;
-      else if (c >= 3)  comboBonusEggs = 2;
-      else if (c >= 2)  comboBonusEggs = 1;
-      // Banner shown via game state
-      if (c >= 2) {
-        game._comboBannerTimer = 1100;
-        if (game.audio) game.audio.play('combo');
-      }
-    }
-    // Spawn eggs (terrain bonus + combo bonus).
-    const baseEggs = Math.max(1, Math.round(this.eggs * (this.eggBonus || 1)));
-    const eggsToSpawn = baseEggs + comboBonusEggs;
+    // Spawn eggs. Harsh-terrain bonus rewards exploration on mud/concrete.
+    const eggsToSpawn = Math.max(1, Math.round(this.eggs * (this.eggBonus || 1)));
     const hatchMul = (game.bonuses && game.bonuses.hatchTimeMul) || 1;
     for (let i = 0; i < eggsToSpawn; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -969,11 +947,8 @@ class Food {
       game.eggs.push(eg);
     }
     game.spawnDepositEffect(this.x, this.y);
-    const terrainBonus = baseEggs - this.eggs;
-    const extraTxt = [];
-    if (terrainBonus > 0) extraTxt.push(`地形+${terrainBonus}`);
-    if (comboBonusEggs > 0) extraTxt.push(`🔥${game.combo.count}連+${comboBonusEggs}`);
-    const bonusTxt = extraTxt.length ? ` (${extraTxt.join(', ')})` : '';
+    const terrainBonus = eggsToSpawn - this.eggs;
+    const bonusTxt = terrainBonus > 0 ? ` (地形+${terrainBonus})` : '';
     game.showMessage(`巣に運んだ！ 卵 +${eggsToSpawn}${bonusTxt}`, 'success');
     if (game.audio) game.audio.play('deposit');
     if (game._advanceTutorial) game._advanceTutorial('deposit');
@@ -2891,8 +2866,6 @@ class AudioFx {
                         this._tone(t + 0.12, 659, 0.12, 0.25, 'triangle');
                         this._tone(t + 0.24, 784, 0.12, 0.25, 'triangle');
                         this._tone(t + 0.36, 1047, 0.30, 0.27, 'triangle'); break;
-      case 'combo':     this._tone(t,        880, 0.05, 0.20, 'triangle');
-                        this._tone(t + 0.05, 1175, 0.06, 0.22, 'triangle'); break;
       case 'powerup':   this._tone(t,        523, 0.06, 0.22, 'square');
                         this._tone(t + 0.06, 784, 0.06, 0.24, 'square');
                         this._tone(t + 0.12, 1047, 0.10, 0.25, 'square'); break;
@@ -3574,9 +3547,6 @@ class Game {
     // Pheromone trail (visual only). Capped to keep render cheap.
     this.trailPoints = [];
     this._trailAcc = 0;
-    // Carry combo: chain depositing within COMBO_WINDOW ms grants bonus eggs.
-    this.combo = { count: 0, timerMs: 0 };
-    this._comboBannerTimer = 0;
     // Colony level + per-bonus tracking. Bonuses get re-applied on continue.
     this.colonyLevel = 0;
     this.nestLevel = 0;
@@ -5159,13 +5129,6 @@ class Game {
     // Decay call-stress over ~5s after a call.
     if (this.callStress > 0) this.callStress = Math.max(0, this.callStress - dt / 5000);
 
-    // Combo timer decay
-    if (this.combo && this.combo.timerMs > 0) {
-      this.combo.timerMs -= dt;
-      if (this.combo.timerMs <= 0) { this.combo.count = 0; this.combo.timerMs = 0; }
-    }
-    if (this._comboBannerTimer > 0) this._comboBannerTimer -= dt;
-
     // Expansion arrow lifetime
     if (this.expansionArrow) {
       this.expansionArrow.timer -= dt;
@@ -5631,25 +5594,6 @@ class Game {
       if (d.x < dLeft || d.x > dRight || d.y < dTop || d.y > dBottom) return;
       d.draw(ctx);
     });
-
-    // Combo banner above the nest (briefly shown after a chained deposit).
-    if (this._comboBannerTimer > 0 && this.combo && this.combo.count >= 2) {
-      const t = this._comboBannerTimer / 1100;
-      const yPos = NEST_Y - NEST_RADIUS_BASE - 30 - (1 - t) * 30;
-      const screenX = (NEST_X - this.camera.x);  // approximate (scale=1 case)
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, t * 1.6);
-      ctx.font = 'bold 24px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-      ctx.fillStyle = '#ffd700';
-      const text = `🔥 ${this.combo.count}連続!`;
-      ctx.strokeText(text, NEST_X, yPos);
-      ctx.fillText(text, NEST_X, yPos);
-      ctx.restore();
-    }
 
     // Active power-up aura around the player.
     if (this.player && !this.player.dead && this.activePowerUp) {
